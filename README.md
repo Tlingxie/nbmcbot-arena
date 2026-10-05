@@ -8,6 +8,7 @@ Rust Minecraft Java Edition **1.21.11**（协议 **774**）机器人，基于固
 
 ```sh
 rustup toolchain install nightly-2026-03-01
+chmod +x scripts/*.sh
 scripts/cargo.sh test --workspace --locked
 scripts/cargo.sh build --release --locked -p nbmcbot --bin nbmcbot
 target/release/nbmcbot check

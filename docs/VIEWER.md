@@ -19,6 +19,7 @@
 
 ```sh
 rustup toolchain install nightly-2026-03-01
+chmod +x scripts/*.sh
 sh scripts/cargo.sh build --release --locked -p nbmcbot --bin nbmcbot
 mkdir -p .runtime/vanilla-1.21.11
 cp examples/arena-server.properties .runtime/vanilla-1.21.11/server.properties
@@ -72,7 +73,8 @@ node scripts/arena-process.mjs server command weather clear
 - 网络发送、序列化与游戏锁分离；仅 loopback UDP，容量 1 的有界队列，忙时丢帧。
   网页、原版客户端和 FFmpeg 是额外观战成本，不包含在 bot 的内存测量中。
 - 浏览器每约 1 秒上传录制片段。单段最多 16MiB，单录像最多 2GiB，
-  最多一个录制或转码任务。文件存放于 `.runtime/recordings/<id>/`。
+  最多一个录制或转码任务。文件存放于 `.runtime/recordings/<id>.mp4`，
+  原始录制和元数据使用同一个 ID。死亡后客户端物理位置不再用于地图，以免显示漂移坐标。
 - MP4 转码失败时保留原始 WebM/MP4，并按真实格式提供下载。页面关闭前应停止录制。
   服务重启后中断录像会保留已有内容并标记失败；历史文件需自行清理。
 - 本机 HTTP 写接口要求同源与随机会话 token，不开放任意控制台命令。

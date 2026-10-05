@@ -1,0 +1,16 @@
+execute unless items entity @s weapon.offhand * if items entity @s inventory.0 minecraft:firework_rocket run function nbmcbot_supply:reload {slot:0}
+execute unless items entity @s weapon.offhand * if items entity @s inventory.1 minecraft:firework_rocket run function nbmcbot_supply:reload {slot:1}
+execute unless items entity @s weapon.offhand * if items entity @s inventory.2 minecraft:firework_rocket run function nbmcbot_supply:reload {slot:2}
+execute unless items entity @s weapon.offhand * if items entity @s inventory.3 minecraft:firework_rocket run function nbmcbot_supply:reload {slot:3}
+execute unless items entity @s weapon.offhand * if items entity @s inventory.4 minecraft:firework_rocket run function nbmcbot_supply:reload {slot:4}
+execute unless items entity @s weapon.offhand * if items entity @s inventory.5 minecraft:firework_rocket run function nbmcbot_supply:reload {slot:5}
+execute unless items entity @s weapon.offhand * if items entity @s inventory.6 minecraft:firework_rocket run function nbmcbot_supply:reload {slot:6}
+execute unless items entity @s weapon.offhand * if items entity @s inventory.7 minecraft:firework_rocket run function nbmcbot_supply:reload {slot:7}
+execute unless items entity @s weapon.offhand * if items entity @s inventory.8 minecraft:firework_rocket run function nbmcbot_supply:reload {slot:8}
+execute unless items entity @s weapon.offhand * if items entity @s inventory.9 minecraft:firework_rocket run function nbmcbot_supply:reload {slot:9}
+execute unless items entity @s weapon.offhand * if items entity @s inventory.10 minecraft:firework_rocket run function nbmcbot_supply:reload {slot:10}
+execute unless items entity @s weapon.offhand * if items entity @s inventory.11 minecraft:firework_rocket run function nbmcbot_supply:reload {slot:11}
+execute unless items entity @s weapon.offhand * if items entity @s inventory.12 minecraft:firework_rocket run function nbmcbot_supply:reload {slot:12}
+execute unless items entity @s weapon.offhand * if items entity @s inventory.13 minecraft:firework_rocket run function nbmcbot_supply:reload {slot:13}
+execute unless items entity @s weapon.offhand * if items entity @s inventory.14 minecraft:firework_rocket run function nbmcbot_supply:reload {slot:14}
+execute unless items entity @s weapon.offhand * if items entity @s inventory.15 minecraft:firework_rocket run function nbmcbot_supply:reload {slot:15}

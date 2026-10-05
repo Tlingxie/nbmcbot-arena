@@ -38,6 +38,7 @@ test('partial human health observation never refreshes an old position', () => {
 test('fresh self samples win over observations, dead and disconnected states survive', () => {
   const state = new ArenaState();
   state.ingest(frame([player({ alive: false, health: 0 })]), 1000);
+  assert.equal(state.players(1000)[0].position, null);
   state.observe('Mace001', { health: 20 }, 1100);
   assert.equal(state.players(1100)[0].health, 0);
   state.ingest(frame([player({ connected: false, alive: null, health: null, position: null })], 2), 1200);

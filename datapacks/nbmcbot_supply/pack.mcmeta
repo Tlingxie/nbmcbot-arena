@@ -1,0 +1,7 @@
+{
+  "pack": {
+    "description": "Finite rocket reload for NBMCBot arena accounts",
+    "min_format": [94, 1],
+    "max_format": 94
+  }
+}

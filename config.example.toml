@@ -1,0 +1,9 @@
+server = "127.0.0.1:25565"
+username = "NBMCBot"
+auth = "offline"
+view_distance = 2
+memory_limit_mb = 256
+reconnect_delay_secs = 5
+max_reconnect_attempts = 5
+plugins = []
+modules = []

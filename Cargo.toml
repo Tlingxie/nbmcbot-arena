@@ -1,0 +1,26 @@
+[workspace]
+members = ["crates/nbmcbot-core", "crates/nbmcbot-plugins", "crates/nbmcbot"]
+resolver = "2"
+
+[patch.crates-io]
+azalea = { path = "vendor/azalea" }
+azalea-client = { path = "vendor/azalea-client" }
+azalea-entity = { path = "vendor/azalea-entity" }
+azalea-physics = { path = "vendor/azalea-physics" }
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+
+[profile.dev]
+debug = 0
+
+[profile.test]
+debug = 0

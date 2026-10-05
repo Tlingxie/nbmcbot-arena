@@ -35,7 +35,8 @@ export class ArenaState {
     }
     this.entries.set(p.name, {
       name: p.name, uuid: string(p.uuid), source: p.source,
-      position: p.position ?? null, velocity: p.velocity ?? null,
+      position: p.alive === false ? null : p.position ?? null,
+      velocity: p.alive === false ? null : p.velocity ?? null,
       yaw: number(p.yaw), pitch: number(p.pitch), health: number(p.health),
       alive: boolean(p.alive), connected: p.connected === true,
       dimension: string(p.dimension), task: string(p.task), style: string(p.style),

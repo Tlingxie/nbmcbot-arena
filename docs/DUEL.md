@@ -137,6 +137,36 @@ Spear passes use three-dimensional distance for the near-contact commitment
 and early exit. Flying directly above or below an opponent no longer counts
 as a close pass that triggers an immediate pull-up and turn.
 
+Spear collision avoidance forecasts a short flight segment using the bot's
+actual body volume, loaded block collision shapes, current momentum, and
+rocket acceleration. Unknown terrain is treated as unsafe. When a predicted
+Charge path reaches contact range, prediction includes the following tick's
+Exit pull-up, so a legal pass is not rejected solely for continuing its dive.
+When the proposed pass is dangerous, it releases the attack charge, suppresses a new rocket,
+and steers upward or sideways instead of completing that attack. The same
+protection applies while navigating after losing the target. Landing returns
+the controller to takeoff; completing a turn requires alignment of the actual
+velocity as well as the view direction. `duel_flight_avoidance` records these
+interventions. This is bounded collision prediction, not immunity: existing
+momentum, knockback, and unobserved world changes can still cause wall or fall
+damage; prediction alone does not establish live-server safety.
+
+The 2026-10-05 collision-avoidance candidate passed 167 workspace tests
+(including 91 tactics tests), formatting, and strict Clippy. Two separate
+45-second vanilla 1.21.11 windows used four bots each: the flat-ground window
+recorded two NPC damage events (Spear003 and Spear001), including
+`ArenaProbe was speared by Spear001` at 20:15:33; the pit window recorded no
+NPC damage. Both recorded zero kinetic damage and zero bot deaths, but each
+included two fall-damage events during setup. After the flat target died,
+bots lost the target and became idle; this is not 45 seconds of continuous
+hits or proof of long-term collision safety. The earlier fresh baseline had
+three kinetic and two fall events, one target kill, and no bot deaths; these
+limited before/after samples provide no statistical guarantee. Reports are
+`.runtime/spear-clearance-after2-flat.json`,
+`.runtime/spear-clearance-after2-pit.json`, and
+`.runtime/spear-clearance-before-fresh.json`. Candidate executable SHA-256:
+`8d42a29adb7ca59ad914093d44d01ec63ecb8d6c289c94064e7c1c9a2d0f5f33`.
+
 The 2026-10-05 recovery/pass regression fix passed 138 workspace tests, strict
 Clippy, and formatting checks. Its final 90-second live window recorded two
 mace attack attempts and one server-confirmed mace hit: `Spear003 was smashed

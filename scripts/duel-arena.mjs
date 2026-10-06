@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { cpSync, readFileSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { duelPlan, loadoutCommands, validateGroupNames } from './arena-loadout.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const helper = resolve(root, 'scripts/arena-process.mjs');
@@ -26,19 +27,11 @@ function requireRunning(kind) {
   if (!record.running) throw new Error(`${kind} is not running; start it with scripts/arena-process.mjs first`);
   return record;
 }
-const count = Number(process.env.NBMCBOT_DUEL_COUNT ?? 5);
-if (!Number.isInteger(count) || count < 1 || count > 50) throw new Error('NBMCBOT_DUEL_COUNT must be an integer from 1 to 50');
-const mode = process.env.NBMCBOT_DUEL_MODE ?? 'mace-vs-spear';
-if (!['mace-vs-mace', 'mace-vs-spear'].includes(mode)) throw new Error('NBMCBOT_DUEL_MODE must be mace-vs-mace or mace-vs-spear');
-const groups = [
-  { kind: 'mace-team', prefix: 'Mace', team: 'nbmc_mace', style: 'mace', enemy: 'Spear', x: -12, yaw: -90 },
-  { kind: 'spear-team', prefix: 'Spear', team: 'nbmc_spear', style: mode === 'mace-vs-mace' ? 'mace' : 'spear', enemy: 'Mace', x: 12, yaw: 90 },
-].map(group => {
+const plan = duelPlan();
+const groups = plan.groups.filter(group => group.count > 0).map(group => {
   const record = dryRun ? null : requireRunning(group.kind);
-  const names = record?.usernames ?? Array.from({ length: count }, (_, index) => `${group.prefix}${String(index + 1).padStart(3, '0')}`);
-  if (names.length < 1 || names.length > 50 || names.some(name => !new RegExp(`^${group.prefix}\\d{3}$`).test(name))) {
-    throw new Error(`${group.kind}: invalid test-account list in process record`);
-  }
+  const names = record?.usernames ?? Array.from({ length: group.count }, (_, index) => `${group.prefix}${String(index + 1).padStart(3, '0')}`);
+  validateGroupNames(group, names, plan.explicitTotal);
   return { ...group, names, record };
 });
 const server = dryRun ? null : requireRunning('server');
@@ -120,40 +113,7 @@ async function waitForLivingBots() {
   throw new Error(`test accounts did not finish respawning within 10 seconds: ${livingStatusProblems(names, statuses).join('; ')}. No server healing, equipment or teleport commands were sent.`);
 }
 function setupCommands() {
-  const commands = [];
-  const unbreakable = 'minecraft:unbreakable={}';
-  const armor = `${unbreakable},minecraft:enchantments={"minecraft:protection":4}`;
-  const boots = `${unbreakable},minecraft:enchantments={"minecraft:protection":4,"minecraft:feather_falling":4}`;
-  for (const group of groups) {
-    commands.push(`team add ${group.team}`, `team modify ${group.team} friendlyFire false`,
-      `team modify ${group.team} color ${group.kind === 'mace-team' ? 'red' : 'blue'}`);
-    for (const [index, name] of group.names.entries()) {
-      const z = (index - (group.names.length - 1) / 2) * 3;
-      commands.push(
-        `tag ${name} add nbmc_duel`,
-        `team join ${group.team} ${name}`,
-        `gamemode survival ${name}`,
-        `clear ${name}`,
-        `effect clear ${name}`,
-        `effect give ${name} minecraft:instant_health 1 5 true`,
-        `effect give ${name} minecraft:saturation 1 5 true`,
-        `item replace entity ${name} armor.head with minecraft:netherite_helmet[${armor}]`,
-        `item replace entity ${name} armor.legs with minecraft:netherite_leggings[${armor}]`,
-        `item replace entity ${name} armor.feet with minecraft:netherite_boots[${boots}]`,
-        `item replace entity ${name} armor.chest with minecraft:elytra[${unbreakable}]`,
-        `item replace entity ${name} hotbar.0 with minecraft:${group.style === 'mace' ? 'mace' : 'netherite_spear'}[minecraft:unbreakable={}]`,
-        `item replace entity ${name} weapon.offhand with minecraft:firework_rocket[minecraft:fireworks={flight_duration:1,explosions:[]}] 64`,
-      );
-      if (group.style === 'mace') {
-        commands.push(`item replace entity ${name} hotbar.1 with minecraft:wind_charge 64`,
-          `item replace entity ${name} hotbar.2 with minecraft:ender_pearl 16`,
-          `item replace entity ${name} hotbar.3 with minecraft:netherite_chestplate[${armor}]`);
-      }
-      commands.push(`spawnpoint ${name} ${group.x} 64 ${Math.floor(z)} ${group.yaw} 0`,
-        `tp ${name} ${group.x} 64 ${z} ${group.yaw} 0`);
-    }
-  }
-  return commands;
+  return loadoutCommands(plan, groups);
 }
 
 if (action === 'resupply') {

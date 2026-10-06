@@ -135,7 +135,7 @@ active, and an actual chestplate swap still needs a valid interception window.
 
 Mace fall safety rechecks the interception window and actual terrain
 each tick while dropping. If a missed pass no longer has a viable interception,
-it switches back to the elytra in that tick, enters Recover, and pitches upward
+it requests an elytra swap in that tick, enters Recover, and pitches upward
 to reduce descent speed. Low-altitude gliding also uses a flight guard rather
 than relying only on target height. A legal close-range smash retains priority;
 the guard does not grant fall immunity or guarantee zero damage. If the server

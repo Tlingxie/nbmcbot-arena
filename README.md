@@ -2,7 +2,7 @@
 
 Rust Minecraft Java Edition **1.21.11**（协议 **774**）机器人，基于固定版本 Azalea 0.15.1。当前交付包含命令控制、寻路、原生自动化与受限 Wasm 插件运行时。完整 Meteor/Baritone 功能移植尚未完成，功能状态见 [FEATURES](docs/FEATURES.md)。
 
-现已包含 **网页观战台**：全员实时坐标、血量和战术地图，原版 Minecraft 窗口直播，点击玩家切换观战视角，重开两队对战，以及录像导出 MP4。网页与游戏客户端在本机运行；GitHub 仓库提供源码。启动步骤见 [网页观战与录像](docs/VIEWER.md)。
+现已包含 **网页观战台**：全员实时坐标、血量和战术地图，原版 Minecraft 窗口直播，点击玩家切换观战视角，重开两队对战或让全部 bot 围攻所选在线真人，以及录像导出 MP4。新局总 bot 数为 1–100，默认 10。围攻开局恢复玩家本人相机和生存模式，配发长矛、鞘翅、防护装备、备用胸甲及 1,088 个烟花；bot 重锤带风爆 III。网页与游戏客户端在本机运行；GitHub 仓库提供源码。启动步骤见 [网页观战与录像](docs/VIEWER.md)。
 
 需要 Rust nightly-2026-03-01。脚本显式选择 rustc、rustdoc 和 Cargo 子命令，避免系统安装的 stable 编译器混入。
 
@@ -52,6 +52,7 @@ fight PlayerName
 fight nearest
 duel mace Spear
 duel spear Mace
+duel mace =PlayerName
 inventory
 stop
 modules
@@ -69,6 +70,8 @@ quit
 `fight PlayerName` 持续追赶指定玩家，`fight nearest` 等待并追打附近符合条件的玩家；均自动选空热栏，进入攻击距离且视线通畅、攻击冷却结束后空手攻击。热栏没有空位时返回错误，不会丢弃物品。`stop` 取消追赶和待发攻击。已在官方 1.21.11 本地服务器验证追击、实际扣血与击杀；地址及后台控制见 [本地测试服](docs/ARENA.md)。
 
 `duel mace <敌方名前缀>` 使用珍珠与风弹升空、跟踪目标并下落重锤攻击；`duel spear <敌方名前缀>` 使用鞘翅、烟花和长矛蓄力执行往返冲刺。它们是基于实时状态的战术控制器，不是训练后的神经网络。需要对应装备与有限消耗品，死亡或 `stop` 会结束战斗任务。两队场景、启动和验证方法见 [空中 PvP](docs/DUEL.md)。
+
+`duel mace =PlayerName` 使用精确玩家名，区别于无 `=` 的前缀匹配。脚本围攻模式使用 `NBMCBOT_DUEL_MODE=mace-vs-player`、`NBMCBOT_DUEL_PLAYER=PlayerName` 与 `NBMCBOT_DUEL_TOTAL=10`；脚本校验已运行账号人数，网页负责按总人数重建群组。总数为 1 时无需启动第二队。
 
 配置中的 `modules` 指定启动时启用的原生模块，默认为空。名称只允许 `anti-idle`、`auto-eat`、`auto-totem`、`auto-respawn`，不能重复；运行中仍可用 `module <name> on|off` 调整。
 

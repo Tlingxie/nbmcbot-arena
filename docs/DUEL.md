@@ -157,7 +157,7 @@ The 2026-10-05 collision-avoidance candidate passed 167 workspace tests
 recorded two NPC damage events (Spear003 and Spear001), including
 `ArenaProbe was speared by Spear001` at 20:15:33; the pit window recorded no
 NPC damage. Both recorded zero kinetic damage and zero bot deaths, but each
-included two fall-damage events during setup. After the flat target died,
+included two early fall-damage events following the elevated setup. After the flat target died,
 bots lost the target and became idle; this is not 45 seconds of continuous
 hits or proof of long-term collision safety. The earlier fresh baseline had
 three kinetic and two fall events, one target kill, and no bot deaths; these

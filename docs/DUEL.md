@@ -163,6 +163,42 @@ Spear passes use three-dimensional distance for the near-contact commitment
 and early exit. Flying directly above or below an opponent no longer counts
 as a close pass that triggers an immediate pull-up and turn.
 
+Within 12 blocks, spear aim estimates contact time from the relative closing
+speed in three dimensions. A diverging or equal-speed pursuit uses only one
+tick of lead. Prediction is capped at four ticks, with target speed capped
+at two blocks/tick and total lead displacement capped at the smaller of four
+blocks or half the current separation. Thus two opponents approaching at
+1.6 blocks/tick from six blocks apart aim at their midpoint, instead of
+extrapolating the target onto the attacker's own position. These bounds are
+specific to spear aim; mace interception retains its separate model.
+
+If a pass has missed and separation is increasing beyond six blocks, the
+controller turns toward the live target instead of continuing an obsolete
+dive for the full 100-tick charge timeout. This also covers flying below a
+target that is climbing away. A current close-contact opportunity retains
+priority. Turns update their bearing from the current target, aim upward as
+needed, and apply new rocket thrust after facing the target. Returning to
+Charge requires the actual horizontal velocity to align; an ascending target
+also requires recovery from rapid descent. Exit progresses to Turn after ten
+ticks even when collision avoidance controls the current movement.
+
+The 2026-10-05 spear trajectory candidate passed 192 workspace tests
+(116 tactics tests), formatting, and strict Clippy. Its 60-second 4v4 live
+window recorded five server-confirmed spear hits and three spear kills, with
+no spear damage or runtime errors. The earlier binary recorded one spear hit
+and two mace hits in the same setup; the candidate recorded no mace hits.
+These are separate finite matches, not a controlled win-rate comparison.
+Sampled Charge segments that began within 30 blocks and then increased their
+separation by more than 20 blocks decreased from nine to four. This metric
+includes normal pursuit of a faster descending target: the remaining long
+segments did not all represent steering away from the opponent. New
+`spear_missed_pass` events and real-physics regression tests verify early
+recovery from missed dives; the live window does not establish perfect
+interception. Reports: `.runtime/mace-clearance-spear-lead-before.json`,
+`.runtime/mace-clearance-spear-lead-after.json`, and their `-analysis.json`
+companions. Candidate executable SHA-256:
+`80a79b63b3824e0f397ab3e18aa5af1383cdad55776497c4c0fc74042b688653`.
+
 Spear collision avoidance forecasts a short flight segment using the bot's
 actual body volume, loaded block collision shapes, current momentum, and
 rocket acceleration. Unknown terrain is treated as unsafe. When a predicted
@@ -212,8 +248,10 @@ result, then run `setup` to enable normal respawning and prepare a fresh round.
 
 ## Persistent target lock and search
 
-Both styles lock one opponent by UUID, so a nearer player does not steal the
-lock during a pass. A confirmed death, logout, incompatible game mode or
+Both styles lock one opponent by UUID, so a nearer player does not steal a
+locally visible lock during a pass. If an automatically selected opponent is
+no longer locally visible, a locally visible enemy takes priority over shared
+reports or remembered positions. A confirmed death, logout, incompatible game mode or
 dimension change releases the lock. Reappearing entities are resolved again
 by UUID; an old ECS entity handle is never treated as permanent identity.
 The command still accepts an enemy-name prefix: `duel mace Spear` selects from
@@ -228,6 +266,12 @@ Losing visibility starts navigation without attacking the remembered point:
   still receives the opponent, its observation supplies the navigation point.
   This uses the team's shared ECS; there is no server-coordinate query or
   cross-process access to the opposing team's local player state.
+- Automatic prefix selection acquires and retains shared targets only within
+  128 blocks of the bot, measured in three dimensions. More distant shared
+  reports release the automatic lock instead of falling through to old-position
+  pursuit; remembered search destinations have the same bound. Exact `=Name`
+  targeting retains remote pursuit. Locally visible opponents are not limited
+  by this shared-report range.
 - With no observer, the bot pursues the last seen point for up to 100 ticks,
   with at most six ticks / 12 blocks of velocity extrapolation. It then searches
   four fixed waypoints 20 blocks around that point, ending at 300 ticks of
@@ -248,6 +292,9 @@ Search does not grant attacks through walls or beyond reach.
 transitions plus periodic navigation observations. It records the name, goal,
 position and memory age where applicable. `duel_target` records combat target
 acquisition. Each bot stores only one target record and one home point.
+Web telemetry reports the current navigation mode (`shared`, `last_seen`,
+`search`, `home`, or `idle`) while pursuing, rather than retaining the previous
+combat phase such as `Exit`.
 
 The 2026-10-05 live 90-second 5v5 validation recorded 50 transitions back to
 `locked` after losing local visibility (25 per team), plus actual `shared`

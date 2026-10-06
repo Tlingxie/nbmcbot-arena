@@ -1,7 +1,58 @@
 use super::*;
 
 impl Duel {
-    pub(super) fn mace_recover(&self, bot: &Client, physics: &Physics) -> Result<()> {
+    pub(super) fn mace_recovery_settled(
+        &mut self,
+        bot: &Client,
+        physics: &Physics,
+        tick: u64,
+    ) -> Result<bool> {
+        if !physics.on_ground()
+            && has_chest(bot, ItemKind::Elytra)
+            && bot.get_component::<FallFlying>().is_some_and(|f| f.0)
+            && physics.velocity.y > -0.5
+            && equipment::equip_chest(bot, ItemKind::Elytra)?
+        {
+            self.mace_recovery_ticks = self.mace_recovery_ticks.saturating_add(1);
+        } else {
+            self.mace_recovery_ticks = 0;
+        }
+        Ok(tick.saturating_sub(self.since) >= 12 && self.mace_recovery_ticks >= 5)
+    }
+
+    fn mace_drop_window(
+        &self,
+        bot: &Client,
+        physics: &Physics,
+        tick: u64,
+        target_position: Vec3,
+        target_velocity: Vec3,
+    ) -> bool {
+        let window = math::drop_intercept_turning(
+            array(bot.position()),
+            array(physics.velocity),
+            array(target_position),
+            array(target_velocity),
+            self.recent_turn,
+        );
+        window.is_some_and(|(_, time, miss)| {
+            let arrival = tick.saturating_add(time.ceil() as u64);
+            miss <= 2.4
+                && self
+                    .mace_equipped_at
+                    .is_some_and(|at| arrival.saturating_sub(at) >= 34)
+                && arrival.saturating_sub(self.last_attack) >= 34
+                && flight_safety::falling_impact(bot, physics).is_none_or(|impact| impact > time)
+        })
+    }
+
+    pub(super) fn mace_recover(
+        &mut self,
+        bot: &Client,
+        physics: &Physics,
+        tick: u64,
+        username: &str,
+    ) -> Result<bool> {
         if self.style != "mace"
             || self.phase != Phase::Recover
             || self.mace_ground_y.is_none()
@@ -9,19 +60,33 @@ impl Duel {
             || (!has_chest(bot, ItemKind::Elytra)
                 && !(36..45).any(|slot| has_slot(bot, slot, ItemKind::Elytra)))
         {
-            return Ok(());
+            return Ok(false);
         }
         bot.walk(WalkDirection::None);
         bot.set_jumping(false);
+        let previous = bot.get_component::<LookDirection>().unwrap_or_default();
         let yaw = bot
             .get_component::<LookDirection>()
             .map(|look| look.y_rot())
             .unwrap_or(0.0);
-        steer(bot, yaw, 15.0, 25.0);
+        steer(bot, yaw, -35.0, 25.0);
         if equipment::equip_chest(bot, ItemKind::Elytra)? {
             crate::aerial::start_gliding(bot);
+            if bot.get_component::<FallFlying>().is_some_and(|f| f.0) {
+                let boost = physics.velocity.y < -0.5 && has_offhand(bot, ItemKind::FireworkRocket);
+                if !self.avoid_flight_collision(
+                    bot,
+                    physics,
+                    tick,
+                    username,
+                    flight_safety::FlightIntent::new(boost, previous),
+                ) && boost
+                {
+                    self.rocket(bot, tick, username)?;
+                }
+            }
         }
-        Ok(())
+        Ok(true)
     }
 
     pub(super) fn mace_flight(
@@ -34,6 +99,7 @@ impl Duel {
         physics: &Physics,
     ) -> Result<()> {
         let p = bot.position();
+        let flight_direction = bot.get_component::<LookDirection>().unwrap_or_default();
         let (target_position, velocity) = if self.motion_sample.is_some() {
             self.predicted_motion(target.position, tick)
         } else {
@@ -71,6 +137,15 @@ impl Duel {
                 if gliding && !physics.on_ground() {
                     bot.walk(WalkDirection::None);
                     bot.set_jumping(false);
+                    if self.avoid_flight_collision(
+                        bot,
+                        physics,
+                        tick,
+                        username,
+                        flight_safety::FlightIntent::new(true, flight_direction),
+                    ) {
+                        return Ok(());
+                    }
                     self.rocket(bot, tick, username)?;
                     self.phase(Phase::MaceClimb, tick, username);
                 }
@@ -102,7 +177,17 @@ impl Duel {
                     height.min(p.y + 48.0)
                 });
                 steer(bot, yaw, if p.y < height { -65.0 } else { 0.0 }, 15.0);
-                if p.y < height && tick.saturating_sub(self.last_rocket) >= 30 {
+                let boost = p.y < height && tick.saturating_sub(self.last_rocket) >= 30;
+                if self.avoid_flight_collision(
+                    bot,
+                    physics,
+                    tick,
+                    username,
+                    flight_safety::FlightIntent::new(boost, flight_direction),
+                ) {
+                    return Ok(());
+                }
+                if boost {
                     self.rocket(bot, tick, username)?;
                 }
                 if p.y >= height && cooled_down {
@@ -163,6 +248,8 @@ impl Duel {
                     && self.velocity_ready
                     && miss <= 2.4
                     && p.y - point[1] >= 2.5
+                    && flight_safety::falling_impact(bot, physics)
+                        .is_none_or(|impact| impact > ticks)
                 {
                     crate::aerial::release_use(bot);
                     self.phase(Phase::MaceSwap, tick, username);
@@ -176,10 +263,19 @@ impl Duel {
                     action(username, "chestplate_swap", tick);
                     return Ok(());
                 }
-                if age >= 2
+                let boost = age >= 2
                     && horizontal_distance(p, target.position) > 6.0
-                    && physics.velocity.horizontal_distance_squared() < 0.64
-                {
+                    && physics.velocity.horizontal_distance_squared() < 0.64;
+                if self.avoid_flight_collision(
+                    bot,
+                    physics,
+                    tick,
+                    username,
+                    flight_safety::FlightIntent::new(boost, flight_direction),
+                ) {
+                    return Ok(());
+                }
+                if boost {
                     self.rocket(bot, tick, username)?;
                 }
                 if p.y < ground_y + 2.0 || age > 80 {
@@ -188,6 +284,15 @@ impl Duel {
             }
             Phase::MaceSwap => {
                 bot.walk(WalkDirection::None);
+                let close = equipped
+                    && !gliding
+                    && math::smash_ready(physics.velocity.y, self.peak_y - p.y, target.distance_sq);
+                if !close && !self.mace_drop_window(bot, physics, tick, target_position, velocity) {
+                    self.phase(Phase::Recover, tick, username);
+                    action(username, "mace_missed_drop", tick);
+                    self.mace_recover(bot, physics, tick, username)?;
+                    return Ok(());
+                }
                 // Inventory clicks predict the slots locally. The server's
                 // FallFlying=false metadata confirms that glide has ended.
                 if has_chest(bot, ItemKind::NetheriteChestplate) && !gliding {
@@ -195,7 +300,8 @@ impl Duel {
                     self.phase(Phase::MaceDrop, tick, username);
                     action(username, "armored_drop", tick);
                 } else if age > 10 {
-                    self.phase(Phase::MaceTakeoff, tick, username);
+                    self.phase(Phase::Recover, tick, username);
+                    self.mace_recover(bot, physics, tick, username)?;
                 }
             }
             Phase::MaceDrop => {
@@ -230,8 +336,14 @@ impl Duel {
                         "bot":username,"player":target.name,"fall_distance":self.peak_y-p.y,"tick":tick})
                     );
                     self.phase(Phase::Recover, tick, username);
-                } else if physics.on_ground() || age > 45 {
-                    self.phase(Phase::Recover, tick, username);
+                } else {
+                    let can_still_hit =
+                        self.mace_drop_window(bot, physics, tick, target_position, velocity);
+                    if physics.on_ground() || !can_still_hit || age > 45 {
+                        self.phase(Phase::Recover, tick, username);
+                        action(username, "mace_missed_drop", tick);
+                        self.mace_recover(bot, physics, tick, username)?;
+                    }
                 }
             }
             _ => {}

@@ -195,6 +195,44 @@ fn loaded(world: &Instance, bounds: &Aabb) -> bool {
         .all(|x| (min_z..=max_z).all(|z| world.chunks.get(&ChunkPos::new(x, z)).is_some()))
 }
 
+pub(super) fn falling_impact(bot: &Client, physics: &Physics) -> Option<f64> {
+    let holder = bot.get_component::<InstanceHolder>()?;
+    let position = bot.position();
+    let dimensions = bot.get_component::<EntityDimensions>()?;
+    let world = holder.instance.read();
+    let mut bounds = dimensions.make_bounding_box(position);
+    let mut velocity = physics.velocity;
+    for tick in 1..=32 {
+        let swept = bounds.expand_towards(velocity).inflate_all(0.15);
+        let size = swept.max - swept.min;
+        if (size.x + 3.0) * (size.y + 3.0) * (size.z + 3.0) > 512.0 || !loaded(&world, &swept) {
+            return Some(f64::from(tick - 1));
+        }
+        if !get_block_collisions(&world, &swept).is_empty() {
+            // Keep the ordering within a tick: the target and terrain may be
+            // crossed during the same movement, in either order.
+            let (mut clear, mut blocked) = (0.0, 1.0);
+            for _ in 0..5 {
+                let fraction = (clear + blocked) * 0.5;
+                let swept = bounds.expand_towards(velocity * fraction).inflate_all(0.15);
+                if get_block_collisions(&world, &swept).is_empty() {
+                    clear = fraction;
+                } else {
+                    blocked = fraction;
+                }
+            }
+            return Some(f64::from(tick - 1) + clear);
+        }
+        bounds = bounds.move_relative(velocity);
+        velocity = Vec3::new(
+            velocity.x * 0.91,
+            (velocity.y - 0.08) * 0.98,
+            velocity.z * 0.91,
+        );
+    }
+    None
+}
+
 impl Duel {
     pub(super) fn avoid_flight_collision(
         &mut self,

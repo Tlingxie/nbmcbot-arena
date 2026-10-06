@@ -186,7 +186,7 @@ fn mace_airborne_recovery_restores_elytra_and_glides_without_rockets_until_landi
     duel.tick(&bot, 102, "Test").unwrap();
     assert_eq!(start_gliding_count(&bot), 1);
     assert_eq!(duel.phase, Phase::Recover);
-    assert!((bot.get_component::<LookDirection>().unwrap().x_rot() - 15.0).abs() < 0.001);
+    assert!(bot.get_component::<LookDirection>().unwrap().x_rot() < 0.0);
     assert_eq!(
         bot.ecs
             .lock()
@@ -338,11 +338,15 @@ fn mace_flight_kit_launches_with_rocket_while_keeping_mace_in_hand() {
 #[test]
 fn mace_waits_for_server_to_end_gliding_before_armored_drop() {
     let bot = client();
-    let target = target(&bot, 103.0, 100.0);
-    let physics = Physics::default();
+    let mut target = target(&bot, 100.0, 100.0);
+    target.position.y = 64.0;
+    target.aim.y = 64.8;
+    let mut physics = Physics::default();
+    physics.velocity.y = -0.5;
     let mut duel = Duel::new("mace".into(), "Enemy".into());
     duel.phase = Phase::MaceSwap;
     duel.since = 100;
+    duel.mace_equipped_at = Some(1);
     *bot.ecs
         .lock()
         .get_mut::<Inventory>(bot.entity)
@@ -383,9 +387,235 @@ fn mace_grounded_stale_gliding_does_not_consume_rocket() {
 }
 
 #[test]
+fn missed_mace_drop_restores_wings_before_descending_into_the_real_floor() {
+    let bot = armored_recovery_client();
+    let position = Vec3::new(100.0, 88.0, 100.0);
+    {
+        let mut ecs = bot.ecs.lock();
+        *ecs.get_mut::<Position>(bot.entity).unwrap() = Position::new(position);
+        let mut physics = ecs.get_mut::<Physics>(bot.entity).unwrap();
+        physics.velocity = Vec3::new(1.0, -2.0, 0.0);
+        physics.bounding_box = EntityDimensions::new(0.6, 1.8).make_bounding_box(position);
+    }
+    stone_box(&bot, [94, 70, 94], [135, 71, 106]);
+    let mut enemy = target(&bot, 130.0, 100.0);
+    enemy.position.y = 80.0;
+    enemy.aim.y = 80.8;
+    let mut duel = Duel::new("mace".into(), "Enemy".into());
+    duel.phase = Phase::MaceDrop;
+    duel.since = 100;
+    duel.peak_y = 110.0;
+    duel.mace_ground_y = Some(0.0);
+    duel.mace_equipped_at = Some(1);
+    let physics = bot.get_component::<Physics>().unwrap();
+    duel.mace(&bot, 105, "Test", &enemy, Vec3::ZERO, &physics)
+        .unwrap();
+    assert_eq!(
+        duel.phase,
+        Phase::Recover,
+        "do not wait 45 ticks after the target moved aside"
+    );
+    assert!(
+        has_chest(&bot, ItemKind::Elytra),
+        "queue recovery equipment in the same tick"
+    );
+    // The inventory swap takes one tick before flight can start.
+    let next = bot.position() + physics.velocity;
+    assert!(next.y > 72.0);
+    {
+        let mut ecs = bot.ecs.lock();
+        *ecs.get_mut::<Position>(bot.entity).unwrap() = Position::new(next);
+        let mut falling = ecs.get_mut::<Physics>(bot.entity).unwrap();
+        falling.bounding_box = falling.bounding_box.move_relative(physics.velocity);
+        falling.velocity = Vec3::new(
+            physics.velocity.x * 0.91,
+            (physics.velocity.y - 0.08) * 0.98,
+            physics.velocity.z * 0.91,
+        );
+    }
+    let mut safe_descent = false;
+    for tick in 106..126 {
+        bot.ecs
+            .lock()
+            .get_mut::<azalea::tick_counter::TicksConnected>(bot.entity)
+            .unwrap()
+            .0 = tick;
+        let physics = bot.get_component::<Physics>().unwrap();
+        duel.mace(&bot, tick, "Test", &enemy, Vec3::ZERO, &physics)
+            .unwrap();
+        if bot.get_component::<FallFlying>().is_some_and(|f| f.0) {
+            advance_flight_without_collision(&bot, false);
+            safe_descent |= bot.get_component::<Physics>().unwrap().velocity.y > -0.5;
+        }
+        packet_tick(&bot);
+    }
+    assert!(
+        safe_descent,
+        "elytra metadata alone is not enough: vertical speed must recover"
+    );
+}
+
+#[test]
+fn missed_low_mace_dive_uses_terrain_instead_of_the_old_launch_height() {
+    let bot = flight_scene(Vec3::new(100.0, 78.0, 100.0), Vec3::new(1.2, -1.4, 0.0));
+    stone_box(&bot, [94, 70, 94], [135, 71, 106]);
+    let mut enemy = target(&bot, 120.0, 100.0);
+    enemy.position.y = 100.0;
+    enemy.aim.y = 100.8;
+    let mut duel = Duel::new("mace".into(), "Enemy".into());
+    duel.phase = Phase::MaceDive;
+    duel.since = 100;
+    duel.mace_ground_y = Some(0.0);
+    duel.mace_equipped_at = Some(1);
+    for tick in 105..114 {
+        let physics = bot.get_component::<Physics>().unwrap();
+        duel.mace(&bot, tick, "Test", &enemy, Vec3::ZERO, &physics)
+            .unwrap();
+        assert!(bot.get_component::<LookDirection>().unwrap().x_rot() < 0.0);
+        let next_velocity = azalea::physics::travel::fall_flying_velocity(
+            physics.velocity,
+            bot.get_component::<LookDirection>().unwrap(),
+            0.08,
+        );
+        if bot.position().y + next_velocity.y <= 72.0 {
+            assert!(
+                next_velocity.y > -0.5,
+                "touchdown must follow a settled glide"
+            );
+            return;
+        }
+        advance_flight_without_collision(&bot, tick.saturating_sub(duel.last_rocket) < 20);
+        packet_tick(&bot);
+    }
+}
+
+#[test]
+fn targetless_mace_recovery_keeps_its_upward_control() {
+    let bot = armored_recovery_client();
+    let mut duel = Duel::new("mace".into(), "Enemy".into());
+    duel.phase = Phase::Recover;
+    duel.mace_ground_y = Some(64.0);
+    for tick in 100..104 {
+        bot.ecs
+            .lock()
+            .get_mut::<azalea::tick_counter::TicksConnected>(bot.entity)
+            .unwrap()
+            .0 = tick;
+        duel.tick(&bot, tick, "Test").unwrap();
+        assert!(
+            bot.get_component::<LookDirection>().unwrap().x_rot() < 0.0,
+            "idle navigation must not overwrite recovery with a downward approach"
+        );
+    }
+}
+
+#[test]
+fn lost_mace_target_resumes_pursuit_after_recovery_settles() {
+    let bot = armored_recovery_client();
+    let selected = enemy(&bot, "Enemy1", 80.0);
+    let mut duel = Duel::new("mace".into(), "Enemy".into());
+    duel.phase = Phase::Recover;
+    duel.since = 100;
+    duel.mace_ground_y = Some(64.0);
+    duel.tick(&bot, 100, "Test").unwrap();
+    bot.ecs.lock().entity_mut(selected).remove::<LoadedBy>();
+    for tick in 101..=120 {
+        {
+            let mut ecs = bot.ecs.lock();
+            ecs.get_mut::<azalea::tick_counter::TicksConnected>(bot.entity)
+                .unwrap()
+                .0 = tick;
+            if tick >= 105 {
+                ecs.get_mut::<Physics>(bot.entity).unwrap().velocity.y = -0.2;
+            }
+        }
+        duel.tick(&bot, tick, "Test").unwrap();
+        if tick <= 105 {
+            assert_eq!(duel.phase, Phase::Recover);
+        }
+    }
+    assert_eq!(duel.phase, Phase::Approach);
+    assert!(
+        direction(&bot).x < -0.8,
+        "resume flying toward the last seen target"
+    );
+}
+
+#[test]
+fn mace_swap_aborts_a_lost_intercept_before_glide_metadata_arrives() {
+    let bot = armored_recovery_client();
+    bot.ecs
+        .lock()
+        .entity_mut(bot.entity)
+        .insert(FallFlying(true));
+    let enemy = target(&bot, 130.0, 100.0);
+    let mut duel = Duel::new("mace".into(), "Enemy".into());
+    duel.phase = Phase::MaceSwap;
+    duel.since = 100;
+    duel.mace_ground_y = Some(64.0);
+    duel.mace_equipped_at = Some(1);
+    let physics = bot.get_component::<Physics>().unwrap();
+    duel.mace(&bot, 101, "Test", &enemy, Vec3::ZERO, &physics)
+        .unwrap();
+    assert_eq!(duel.phase, Phase::Recover);
+    assert!(has_chest(&bot, ItemKind::Elytra));
+}
+
+#[test]
+fn mace_terrain_impact_precedes_a_later_intercept_in_the_same_tick() {
+    let bot = flight_scene(Vec3::new(100.0, 72.0, 100.0), Vec3::new(0.0, -2.0, 0.0));
+    stone_box(&bot, [98, 69, 98], [102, 70, 102]);
+    let physics = bot.get_component::<Physics>().unwrap();
+    let (_, intercept, _) = math::drop_intercept_turning(
+        array(bot.position()),
+        array(physics.velocity),
+        [100.0, 69.5, 100.0],
+        [0.0; 3],
+        0.0,
+    )
+    .unwrap();
+    assert!(intercept < 1.0);
+    assert!(flight_safety::falling_impact(&bot, &physics).unwrap() < intercept);
+}
+
+#[test]
+fn legal_ground_smash_is_queued_before_recovery_changes_armor() {
+    let bot = armored_recovery_client();
+    let position = Vec3::new(100.0, 66.0, 100.0);
+    {
+        let mut ecs = bot.ecs.lock();
+        *ecs.get_mut::<Position>(bot.entity).unwrap() = Position::new(position);
+        ecs.get_mut::<Physics>(bot.entity).unwrap().bounding_box =
+            EntityDimensions::new(0.6, 1.8).make_bounding_box(position);
+    }
+    stone_box(&bot, [98, 62, 98], [102, 63, 102]);
+    let mut enemy = target(&bot, 100.0, 100.0);
+    enemy.position.y = 64.0;
+    enemy.aim.y = 64.9;
+    enemy.distance_sq = (bot.eye_position().y - 65.8).powi(2);
+    let mut duel = Duel::new("mace".into(), "Enemy".into());
+    duel.phase = Phase::MaceDrop;
+    duel.since = 100;
+    duel.peak_y = 90.0;
+    duel.mace_ground_y = Some(64.0);
+    duel.mace_equipped_at = Some(1);
+    let physics = bot.get_component::<Physics>().unwrap();
+    duel.mace(&bot, 105, "Test", &enemy, Vec3::ZERO, &physics)
+        .unwrap();
+    assert_eq!(duel.last_attack, 105);
+    assert_eq!(duel.phase, Phase::Recover);
+    assert!(has_chest(&bot, ItemKind::NetheriteChestplate));
+    assert_eq!(start_gliding_count(&bot), 0);
+    let ecs = bot.ecs.lock();
+    let events = ecs.resource::<azalea::ecs::message::Messages<azalea::attack::AttackEvent>>();
+    assert_eq!(events.len(), 1);
+}
+
+#[test]
 fn mace_cuts_elytra_only_for_a_fresh_reachable_moving_intercept() {
     for (observed, speed, swaps) in [(true, 0.2, true), (false, 0.2, false), (true, 1.8, false)] {
         let bot = client();
+        stone_box(&bot, [94, 62, 94], [125, 63, 106]);
         *bot.ecs
             .lock()
             .get_mut::<Inventory>(bot.entity)

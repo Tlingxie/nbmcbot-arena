@@ -185,11 +185,6 @@ impl Duel {
         if bot.health() <= 0.0 {
             return Ok(());
         }
-        if self.phase == Phase::Recover
-            && let Some(physics) = bot.get_component::<Physics>()
-        {
-            self.mace_recover(bot, &physics)?;
-        }
         let tracking = self.tracker.update(bot, &self.prefix, tick);
         let target = if let tracking::Tracking::Visible(target) = tracking {
             if self.tracking_mode.take().is_some() {
@@ -202,7 +197,9 @@ impl Duel {
             target
         } else {
             self.reset_velocity();
-            self.mace_recovery_ticks = 0;
+            if self.phase != Phase::Recover {
+                self.mace_recovery_ticks = 0;
+            }
             if self.style == "mace" && matches!(self.phase, Phase::MaceSwap | Phase::MaceDrop) {
                 self.phase(Phase::Recover, tick, username);
             }
@@ -244,6 +241,16 @@ impl Duel {
                 );
             }
             self.tracking_mode = Some(mode);
+            if self.phase == Phase::Recover
+                && let Some(physics) = bot.get_component::<Physics>()
+                && self.mace_recover(bot, &physics, tick, username)?
+            {
+                if self.mace_recovery_settled(bot, &physics, tick)? {
+                    self.phase(Phase::Approach, tick, username);
+                } else {
+                    return Ok(());
+                }
+            }
             self.pursue(bot, tick, username, goal)?;
             return Ok(());
         };
@@ -502,7 +509,7 @@ impl Duel {
                 }
             }
             Phase::Recover => {
-                self.mace_recover(bot, physics)?;
+                self.mace_recover(bot, physics, tick, username)?;
                 bot.walk(WalkDirection::None);
                 bot.set_jumping(false);
                 if physics.on_ground() && age >= 12 {
@@ -510,19 +517,9 @@ impl Duel {
                 } else if !physics.on_ground()
                     && self.mace_ground_y.is_some()
                     && equipment::has_flight_kit(bot)
-                    && has_chest(bot, ItemKind::Elytra)
-                    && bot.get_component::<FallFlying>().is_some_and(|f| f.0)
-                    && physics.velocity.y >= -0.5
-                    && equipment::equip_chest(bot, ItemKind::Elytra)?
+                    && self.mace_recovery_settled(bot, physics, tick)?
                 {
-                    // FallFlying is predicted locally; require a settled glide
-                    // before leaving recovery, without waiting to reach ground.
-                    self.mace_recovery_ticks = self.mace_recovery_ticks.saturating_add(1);
-                    if age >= 12 && self.mace_recovery_ticks >= 5 {
-                        self.phase(Phase::MaceClimb, tick, username);
-                    }
-                } else {
-                    self.mace_recovery_ticks = 0;
+                    self.phase(Phase::MaceClimb, tick, username);
                 }
             }
             _ => self.phase(Phase::Approach, tick, username),

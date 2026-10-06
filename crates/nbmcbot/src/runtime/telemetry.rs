@@ -24,7 +24,8 @@ use serde::Serialize;
 
 use super::{Session, Task};
 
-const MAX_PACKET_BYTES: usize = 60_000;
+// macOS rejects UDP datagrams above its default 9216-byte limit, even on loopback.
+const MAX_PACKET_BYTES: usize = 8192;
 const FRAME_OVERHEAD: usize = 256;
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -568,6 +569,76 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    fn active_players(count: usize) -> Vec<PlayerSnapshot> {
+        let mut session = session();
+        attach_client(&mut session, 20.0);
+        let mut player = snapshot_session(&session).unwrap();
+        player.position = Some([1234.123456789, 280.123456789, -9876.123456789]);
+        player.velocity = Some([1.123456789, -2.123456789, 3.123456789]);
+        player.dimension = Some(format!("custom:{}", "long_dimension_".repeat(8)));
+        player.task = Some("duel".into());
+        player.style = Some("mace".into());
+        player.phase = Some("ElytraIntercept".into());
+        player.target = Some("TargetPlayer1234".into());
+        (1..=count)
+            .map(|i| {
+                let mut copy = player.clone();
+                copy.name = format!("Mace{i:03}");
+                copy
+            })
+            .collect()
+    }
+
+    #[test]
+    fn telemetry_large_fleets_fit_portable_udp_packets_without_losing_players() {
+        for count in [25, 50] {
+            let players = active_players(count);
+            let mut sequence = 100;
+            let packets = encode_frames(&players, u32::MAX, u64::MAX, &mut sequence).unwrap();
+            assert!(packets.len() > 1, "{count} active players need splitting");
+            let mut names = Vec::new();
+            for (index, packet) in packets.iter().enumerate() {
+                assert!(packet.len() <= 8192, "datagram is {} bytes", packet.len());
+                let frame: serde_json::Value = serde_json::from_slice(packet).unwrap();
+                assert_eq!(frame["sequence"], 100 + index as u64);
+                names.extend(
+                    frame["players"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|player| player["name"].as_str().unwrap().to_owned()),
+                );
+            }
+            assert_eq!(
+                names,
+                (1..=count)
+                    .map(|i| format!("Mace{i:03}"))
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(sequence, 100 + packets.len() as u64);
+        }
+    }
+
+    #[test]
+    fn telemetry_large_fleets_round_trip_through_real_loopback_udp() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").unwrap();
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
+        sender.connect(receiver.local_addr().unwrap()).unwrap();
+        let mut received = vec![0; 65_535];
+        for count in [25, 50] {
+            let packets = encode_frames(&active_players(count), 42, 1_000, &mut 0).unwrap();
+            for packet in packets {
+                assert_eq!(sender.send(&packet).unwrap(), packet.len());
+                let length = receiver.recv(&mut received).unwrap();
+                assert_eq!(&received[..length], packet.as_slice());
+                assert!(length <= 8192);
+            }
+        }
     }
 
     #[tokio::test]

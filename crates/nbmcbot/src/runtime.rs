@@ -508,7 +508,7 @@ impl Session {
         match command {
             Command::Help => println!(
                 "{}",
-                json!({"event":"help","bot":self.config.username,"commands":["status","say <text>","goto <x> <y> <z>","follow <player>","mine <x> <y> <z>","look <yaw> <pitch>","attack <player>","fight <player|nearest>","duel mace|spear <enemy-prefix>","inventory","stop","modules","module <name> on|off","plugins","plugin load <path>","plugin unload <id>","disconnect","reconnect","quit"]})
+                json!({"event":"help","bot":self.config.username,"commands":["status","say <text>","goto <x> <y> <z>","follow <player>","mine <x> <y> <z>","look <yaw> <pitch>","attack <player>","fight <player|nearest>","duel mace|spear <enemy-prefix|=player>","inventory","stop","modules","module <name> on|off","plugins","plugin load <path>","plugin unload <id>","disconnect","reconnect","quit"]})
             ),
             Command::Status => {
                 let bot = self

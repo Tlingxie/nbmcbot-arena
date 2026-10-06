@@ -147,6 +147,78 @@ fn lock_survives_nearer_enemy_and_temporary_loss_of_visibility() {
 }
 
 #[test]
+fn exact_player_target_never_matches_a_suffix_or_falls_back_to_another_player() {
+    let bot = client();
+    let target = enemy(&bot, "sdkl", 12.0, &[bot.entity]);
+    enemy(&bot, "sdklSuffix", 3.0, &[bot.entity]);
+    enemy(&bot, "Other", 2.0, &[bot.entity]);
+    let mut tracker = Tracker::default();
+    assert_eq!(visible(tracker.update(&bot, "=sdkl", 1)), target);
+    assert_eq!(tracker.target_name(), Some("sdkl"));
+    bot.ecs.lock().get_mut::<LoadedBy>(target).unwrap().clear();
+    assert_eq!(
+        pursue(tracker.update(&bot, "=sdkl", 2), "last_seen").x,
+        12.0
+    );
+    assert_eq!(tracker.target_name(), Some("sdkl"));
+    bot.ecs.lock().entity_mut(target).insert(Dead);
+    assert!(matches!(tracker.update(&bot, "=sdkl", 3), Tracking::Idle));
+    assert_eq!(tracker.target_name(), None);
+}
+
+#[test]
+fn exact_names_are_case_insensitive_and_legacy_prefixes_still_match_suffixes() {
+    let bot = client();
+    let target = enemy(&bot, "sdkl", 12.0, &[bot.entity]);
+    let suffix = enemy(&bot, "sdklSuffix", 3.0, &[bot.entity]);
+    assert_eq!(visible(Tracker::default().update(&bot, "=SDKL", 1)), target);
+    assert_eq!(visible(Tracker::default().update(&bot, "sdkl", 1)), suffix);
+}
+
+#[test]
+fn exact_target_excludes_self_and_same_team_local_bots() {
+    let bot = client();
+    let teammate = enemy(&bot, "Mace002", 12.0, &[bot.entity]);
+    bot.ecs
+        .lock()
+        .entity_mut(teammate)
+        .insert(Account::offline("Mace002"));
+    let opponent = enemy(&bot, "Spear002", 20.0, &[bot.entity]);
+    bot.ecs
+        .lock()
+        .entity_mut(opponent)
+        .insert(Account::offline("Spear002"));
+    let mut tracker = Tracker::default();
+    assert!(matches!(
+        tracker.update(&bot, "=Mace002", 1),
+        Tracking::Idle
+    ));
+    assert!(matches!(tracker.update(&bot, "Mace", 2), Tracking::Idle));
+    assert_eq!(visible(tracker.update(&bot, "=Spear002", 3)), opponent);
+    let own = Account::offline("Mace001");
+    let uuid = own.uuid_or_offline();
+    {
+        let mut ecs = bot.ecs.lock();
+        ecs.resource_mut::<EntityUuidIndex>()
+            .insert(uuid, bot.entity);
+        ecs.get_mut::<TabList>(bot.entity).unwrap().insert(
+            uuid,
+            PlayerInfo {
+                profile: GameProfile::new(uuid, own.username),
+                uuid,
+                gamemode: GameMode::Survival,
+                latency: 0,
+                display_name: None,
+            },
+        );
+    }
+    assert!(matches!(
+        tracker.update(&bot, "=Mace001", 4),
+        Tracking::Idle
+    ));
+}
+
+#[test]
 fn teammate_observation_is_navigation_only_and_disconnected_ally_is_ignored() {
     let bot = client();
     let observer = ally(&bot, "Mace002");

@@ -229,13 +229,15 @@ struct View<'a> {
 
 impl View<'_> {
     fn observe(&self, info: &PlayerInfo) -> TargetState {
-        if !info
-            .profile
-            .name
-            .to_ascii_lowercase()
-            .starts_with(&self.prefix.to_ascii_lowercase())
-            || !combat_mode(info.gamemode)
-        {
+        let matches = if let Some(name) = self.prefix.strip_prefix('=') {
+            info.profile.name.eq_ignore_ascii_case(name)
+        } else {
+            info.profile
+                .name
+                .to_ascii_lowercase()
+                .starts_with(&self.prefix.to_ascii_lowercase())
+        };
+        if !matches || !combat_mode(info.gamemode) {
             return TargetState::Invalid;
         }
         let Some(entity) = self
@@ -245,7 +247,11 @@ impl View<'_> {
         else {
             return TargetState::Unseen;
         };
-        if entity == self.viewer {
+        if entity == self.viewer
+            || ((self.ecs.get::<Account>(entity).is_some()
+                || self.ecs.get::<RawConnection>(entity).is_some())
+                && same_team(self.own_name, &info.profile.name))
+        {
             return TargetState::Invalid;
         }
         if !identity_matches(self.ecs, entity, info.profile.uuid.as_u128()) {
@@ -339,17 +345,20 @@ impl View<'_> {
         let Some(profile) = self.ecs.get::<GameProfileComponent>(observer) else {
             return false;
         };
-        let team = self.own_name.trim_end_matches(|c: char| c.is_ascii_digit());
-        !team.is_empty()
-            && profile
-                .name
-                .trim_end_matches(|c: char| c.is_ascii_digit())
-                .eq_ignore_ascii_case(team)
+        same_team(self.own_name, &profile.name)
             && self
                 .tab
                 .get(&profile.uuid)
                 .is_some_and(|info| combat_mode(info.gamemode))
     }
+}
+
+fn same_team(own_name: &str, other_name: &str) -> bool {
+    let team = own_name.trim_end_matches(|c: char| c.is_ascii_digit());
+    !team.is_empty()
+        && other_name
+            .trim_end_matches(|c: char| c.is_ascii_digit())
+            .eq_ignore_ascii_case(team)
 }
 
 fn identity_matches(ecs: &World, entity: Entity, uuid: u128) -> bool {

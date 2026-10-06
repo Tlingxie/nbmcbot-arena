@@ -3,10 +3,11 @@ import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolve, basename } from 'node:path';
 import { validName } from './state.mjs';
+import { desiredFleets, reconcileFleets } from './fleets.mjs';
 
 const run = promisify(execFile);
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-export const validMode = mode => ['mace-vs-mace', 'mace-vs-spear'].includes(mode);
+export const validMode = mode => ['mace-vs-player', 'mace-vs-mace', 'mace-vs-spear'].includes(mode);
 function failure(message, statusCode = 400) { return Object.assign(new Error(message), { statusCode }); }
 
 export class Arena {
@@ -125,37 +126,72 @@ export class Arena {
     this.state.event('camera', target ? `${viewer} → ${target}` : `${viewer}: free camera`);
     return this.state.observer;
   }
-  async startRound({ mode, countdown = 10 }) {
+  async startRound({ mode, countdown = 10, botCount = 10, player = null }) {
     if (!validMode(mode) || !Number.isInteger(countdown) || countdown < 0 || countdown > 30) throw failure('Invalid round settings');
+    desiredFleets(botCount);
+    if (mode !== 'mace-vs-player' && botCount < 2) throw failure('两队对战至少需要 2 个机器人');
+    if (mode === 'mace-vs-player') this.requireParticipant(player);
+    else player = null;
     if (['preparing', 'countdown'].includes(this.state.round.state)) throw failure('A round is already being prepared', 409);
-    for (const kind of ['server', 'mace-team', 'spear-team']) this.record(kind);
-    this.state.round = { state: 'preparing', mode, countdown, error: null };
-    this.roundPromise = this.prepareRound(mode, countdown);
+    this.record('server');
+    this.state.round = { state: 'preparing', mode, countdown, botCount, player, error: null };
+    this.roundPromise = this.prepareRound({ mode, countdown, botCount, player });
     return this.state.round;
   }
-  async prepareRound(mode, countdown) {
+  requireParticipant(name) {
+    if (!validName(name) || /^(Mace|Spear)\d{3}$/.test(name)) throw failure('请选择有效的真人玩家');
+    const player = this.state.players().find(p => p.name === name);
+    if (!this.humans.has(name) || !player?.connected || player.stale) throw failure('目标玩家需要在线且位置数据有效', 409);
+    if (player.alive === false) throw failure('请先在 Minecraft 中复活，再开启围攻', 409);
+  }
+  async fleetControl(kind, action, command, extraEnv = {}) {
+    const result = await run(process.execPath, [resolve(this.root, 'scripts/arena-process.mjs'), kind, action, ...(command ? [command] : [])], {
+      cwd: this.root, env: { ...process.env, ...extraEnv }, timeout: 10000, maxBuffer: 1024 * 1024,
+    });
+    this.cached.delete(kind);
+    return result.stdout.trim() ? JSON.parse(result.stdout) : null;
+  }
+  async prepareRound({ mode, countdown, botCount, player }) {
+    const settings = { mode, botCount, player };
+    const env = { ...process.env, NBMCBOT_DUEL_MODE: mode, NBMCBOT_DUEL_TOTAL: String(botCount), NBMCBOT_DUEL_PLAYER: player ?? '' };
     try {
+      await reconcileFleets(botCount, {
+        control: (...args) => this.fleetControl(...args),
+        telemetryAddress: `127.0.0.1:${process.env.NBMCBOT_TELEMETRY_PORT ?? 4211}`,
+        cancelled: () => this.closed,
+      });
       for (const action of ['setup', 'resupply']) {
         if (this.closed) return;
+        if (player) this.requireParticipant(player);
         await run(process.execPath, [resolve(this.root, 'scripts/duel-arena.mjs'), action], {
-          cwd: this.root, env: { ...process.env, NBMCBOT_DUEL_MODE: mode }, timeout: 120000, maxBuffer: 4 * 1024 * 1024,
+          cwd: this.root, env, timeout: 180000, maxBuffer: 4 * 1024 * 1024,
         });
       }
+      if (player) this.state.observer = { viewer: player, target: null };
       this.command('server', 'effect give @a[tag=nbmc_duel] minecraft:instant_health 1 5 true');
+      if (player) this.command('server', `effect give ${player} minecraft:instant_health 1 5 true`);
       this.state.round.state = 'countdown';
       for (let remaining = countdown; remaining > 0; remaining--) {
         if (this.closed) return;
         this.state.round.countdown = remaining;
+        if (player) {
+          this.requireParticipant(player);
+          this.command('server', `title ${player} title ${JSON.stringify({ text: String(remaining), color: 'gold' })}`);
+        }
         await sleep(1000);
       }
       if (this.closed) return;
+      if (player) {
+        this.requireParticipant(player);
+        this.command('server', `title ${player} title ${JSON.stringify({ text: 'GO!', color: 'red' })}`);
+      }
       await run(process.execPath, [resolve(this.root, 'scripts/duel-arena.mjs'), 'fight'], {
-        cwd: this.root, env: { ...process.env, NBMCBOT_DUEL_MODE: mode }, timeout: 15000,
+        cwd: this.root, env, timeout: 15000,
       });
-      this.state.round = { state: 'running', mode, countdown: 0, error: null };
-      this.state.event('round', `${mode} started`);
+      this.state.round = { state: 'running', ...settings, countdown: 0, error: null };
+      this.state.event('round', `${mode}: ${botCount} bots${player ? ` → ${player}` : ''}`);
     } catch (error) {
-      this.state.round = { state: 'error', mode, countdown: 0, error: error.message.slice(0, 500) };
+      this.state.round = { state: 'error', ...settings, countdown: 0, error: error.message.slice(0, 500) };
       this.state.event('error', 'Round setup failed; inspect arena console logs');
     }
   }

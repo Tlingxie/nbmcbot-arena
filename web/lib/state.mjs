@@ -9,7 +9,7 @@ export class ArenaState {
     this.entries = new Map();
     this.sequences = new Map();
     this.events = [];
-    this.round = { state: 'idle', mode: 'mace-vs-mace', countdown: 0, error: null };
+    this.round = { state: 'idle', mode: 'mace-vs-player', countdown: 0, botCount: 10, player: null, error: null };
     this.observer = { viewer: null, target: null };
   }
   ingest(frame, now = Date.now()) {

@@ -1,4 +1,4 @@
-# Mace versus spear arena
+# Mace arena: team battles and player siege
 
 The local Java 1.21.11 arena is `127.0.0.1:25566`. This scenario uses two shared
 bot processes, with five accounts each by default: `Mace001` through `Mace005`
@@ -22,6 +22,27 @@ when starting each group to choose 1 through 50 accounts per side, for example
 arena commands use account names saved in each running group's process record.
 The count is not a promise that every workload will fit the memory budget.
 
+The web viewer offers `mace-vs-mace`, `mace-vs-spear`, and `mace-vs-player`
+(all bots attack the selected online human). Its total `botCount` is 1–100,
+default 10. The viewer requires at least two bots for a two-team mode; player
+siege permits one. The viewer rebuilds the groups to contain `ceil(total / 2)`
+Mace accounts and `floor(total / 2)` Spear accounts. With one bot, the second group
+is not started or required.
+
+For script use, set `NBMCBOT_DUEL_TOTAL` to the same total and, for siege,
+set a strict Minecraft username in `NBMCBOT_DUEL_PLAYER`:
+
+```sh
+NBMCBOT_DUEL_MODE=mace-vs-player NBMCBOT_DUEL_TOTAL=10 NBMCBOT_DUEL_PLAYER=PlayerName node scripts/duel-arena.mjs setup
+NBMCBOT_DUEL_MODE=mace-vs-player NBMCBOT_DUEL_TOTAL=10 NBMCBOT_DUEL_PLAYER=PlayerName node scripts/duel-arena.mjs fight
+```
+
+These commands do not start, resize, or stop group processes. Prepare the
+matching running groups first; explicit totals are checked against their saved
+account records. Without `NBMCBOT_DUEL_TOTAL`, existing record counts remain
+compatible, and dry runs use the legacy `NBMCBOT_DUEL_COUNT` (default five per
+group). `NBMCBOT_DUEL_MODE` defaults to `mace-vs-spear`.
+
 Both duel groups start with `auto-respawn` enabled through their generated startup configuration, so dead accounts can reconnect before setup commands arrive; other bot groups keep their existing defaults.
 
 `setup` enables `auto-respawn`, cancels both groups' tasks, then waits up to ten
@@ -33,7 +54,7 @@ disconnected, or missing a fresh status, setup fails without sending healing,
 equipment, or teleport commands. Auto-respawn remains enabled while preparing
 the next round and is disabled by `fight` before either group is armed.
 
-Setup only changes the named test accounts, gives them the `nbmc_duel` tag,
+In the two-team modes, setup only changes the named test accounts, gives them the `nbmc_duel` tag,
 joins the `nbmc_mace` and `nbmc_spear`
 teams, and disables friendly fire. It clears their inventories and effects,
 restores health and food once, equips them, sets survival mode and respawn
@@ -52,7 +73,9 @@ firework rockets in its offhand. Both teams use a defensive enchanted kit:
 Protection IV on every netherite armor piece, including the mace team's spare
 chestplate, and Feather Falling IV on the boots. Elytras have no Protection
 enchantment. Rockets have no explosion
-payload. Equipment is unbreakable; weapons remain unenchanted and there are no
+payload. Equipment is unbreakable; bot maces carry Wind Burst III, the highest
+legal level (`max_level: 3`) in the official 1.21.11 enchantment data. Spears
+remain unenchanted, and there are no
 custom health, damage, speed, or other attribute modifiers. These standard
 vanilla defensive enchantments reduce early one-hit kills and fall damage so
 longer exchanges can be observed; they do not guarantee survival of every hit.
@@ -63,6 +86,20 @@ more rockets without resetting a round, run:
 ```sh
 node scripts/duel-arena.mjs resupply
 ```
+
+In `mace-vs-player`, both groups instead use maces and the same
+`nbmc_attackers` team with friendly fire disabled. Setup scatters bots around
+a ring rather than overlapping their spawn positions. It also changes the
+selected human: restores their own camera before survival mode, leaves the bot
+team, removes the old `nbmc_duel` supply tag, and teleports them to `0 64 0`.
+The player receives an unbreakable netherite spear, Protection IV netherite
+helmet/leggings/boots (Feather Falling IV boots), an elytra, and a spare
+Protection IV chestplate in hotbar slot 3, plus wind charges, 16 pearls and
+64 golden apples. Offhand rockets and 16 reserve inventory stacks total
+1,088 rockets. Only specified equipment and supply slots are replaced; the
+player's entire inventory is never cleared. Health and food are restored after
+equipment is applied. This describes setup behavior, not a new live-combat
+validation; the dated historical results below retain their original scope.
 
 This fills empty offhands and 16 empty main-inventory slots with stacks of 64
 Flight 1 rockets (up to 1,088 per account). Occupied slots are preserved. It
@@ -110,7 +147,7 @@ that every bot hits or that the matchup is balanced. The report is
 `fight` disables auto-respawn for both groups, then sends `duel mace Spear` and
 `duel spear Mace`. Each round uses a single life per account: defeated bots stay
 dead instead of respawning with canceled tasks and becoming passive targets.
-Opponent selection uses the opposing account prefix, so the human player is
+In the two-team modes, opponent selection uses the opposing account prefix, so the human player is
 outside both teams. The scenario has no background round manager: inspect the
 result, then run `setup` to enable normal respawning and prepare a fresh round.
 
@@ -122,6 +159,9 @@ dimension change releases the lock. Reappearing entities are resolved again
 by UUID; an old ECS entity handle is never treated as permanent identity.
 The command still accepts an enemy-name prefix: `duel mace Spear` selects from
 the spear team, while `duel mace Spear001` narrows selection to that name prefix.
+An initial `=` requests an exact username: `duel mace =PlayerName` cannot
+select `PlayerName2`. Player siege sends this exact target to every active
+group and disables bot auto-respawn before fighting.
 
 Losing visibility starts navigation without attacking the remembered point:
 
@@ -185,8 +225,9 @@ node scripts/arena-process.mjs server command stop
 
 Logs, FIFO controls and process records are under `.runtime/vanilla-1.21.11`.
 Use `node scripts/duel-arena.mjs setup --dry-run` to inspect setup commands
-without starting or changing anything. All four actions support `--dry-run`;
-in that mode the account count comes from `NBMCBOT_DUEL_COUNT` or its default.
+without starting or changing anything. All five actions support `--dry-run`;
+in that mode the account count comes from `NBMCBOT_DUEL_TOTAL`, or otherwise
+`NBMCBOT_DUEL_COUNT` and its default.
 The scripts do not launch the server or bots implicitly.
 
 ## Historical 5v5 validation with the earlier kit

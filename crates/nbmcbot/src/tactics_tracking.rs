@@ -15,6 +15,7 @@ use azalea::{
 
 const PURSUIT_TICKS: u64 = 100;
 const FORGET_TICKS: u64 = 300;
+const SHARED_ENGAGEMENT_DISTANCE: f64 = 128.0;
 
 #[derive(Default)]
 pub(super) struct Tracker {
@@ -95,8 +96,27 @@ impl Tracker {
             dimension,
             own_name,
             eye,
+            position,
             prefix,
         };
+
+        if !prefix.starts_with('=')
+            && let Some(lock) = &self.locked
+        {
+            let state = tab
+                .values()
+                .find(|info| info.profile.uuid.as_u128() == lock.uuid)
+                .map_or(TargetState::Invalid, |info| view.observe(info));
+            let local = matches!(&state, TargetState::Observed(observation) if observation.local);
+            if !local {
+                let visible_enemy = tab.values().any(|info| {
+                    matches!(view.observe(info), TargetState::Observed(observation) if observation.local)
+                });
+                if visible_enemy || !shared_in_range(prefix, position, lock.position) {
+                    self.locked = None;
+                }
+            }
+        }
 
         if let Some(lock) = &mut self.locked {
             let state = tab
@@ -123,6 +143,10 @@ impl Tracker {
                             position.z += z;
                             "search"
                         };
+                        if !shared_in_range(prefix, view.position, position) {
+                            self.locked = None;
+                            return self.return_home(view.position);
+                        }
                         return Tracking::Pursue {
                             name: Some(lock.name.clone()),
                             position,
@@ -224,6 +248,7 @@ struct View<'a> {
     dimension: &'a InstanceName,
     own_name: &'a str,
     eye: Vec3,
+    position: Vec3,
     prefix: &'a str,
 }
 
@@ -298,6 +323,11 @@ impl View<'_> {
         let Some(physics) = self.ecs.get::<Physics>(entity) else {
             return TargetState::Unseen;
         };
+        // Reject, rather than mark unseen, so an expired shared engagement
+        // cannot continue through the last-seen/search memory path.
+        if !local && !shared_in_range(self.prefix, self.position, position) {
+            return TargetState::Invalid;
+        }
         let bb = physics.bounding_box;
         let closest = Vec3::new(
             self.eye.x.clamp(bb.min.x, bb.max.x),
@@ -394,6 +424,46 @@ fn cap_velocity(velocity: Vec3) -> Vec3 {
     }
 }
 
+fn shared_in_range(prefix: &str, viewer: Vec3, target: Vec3) -> bool {
+    prefix.starts_with('=')
+        || viewer.distance_squared_to(target) <= SHARED_ENGAGEMENT_DISTANCE.powi(2)
+}
+
 #[cfg(test)]
 #[path = "tactics_tracking_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod engagement_tests {
+    use super::*;
+
+    #[test]
+    fn automatic_shared_engagement_has_a_three_dimensional_boundary() {
+        let origin = Vec3::ZERO;
+        assert!(shared_in_range("Spear", origin, Vec3::new(128.0, 0.0, 0.0)));
+        assert!(!shared_in_range(
+            "Spear",
+            origin,
+            Vec3::new(128.01, 0.0, 0.0)
+        ));
+        assert!(!shared_in_range(
+            "Spear",
+            origin,
+            Vec3::new(100.0, 100.0, 0.0)
+        ));
+        assert!(!shared_in_range(
+            "Spear",
+            origin,
+            Vec3::new(1304.0, 0.0, 0.0)
+        ));
+    }
+
+    #[test]
+    fn explicit_target_retains_remote_pursuit() {
+        assert!(shared_in_range(
+            "=Player",
+            Vec3::ZERO,
+            Vec3::new(1304.0, 500.0, 0.0)
+        ));
+    }
+}

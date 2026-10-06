@@ -1089,8 +1089,8 @@ fn spear_does_not_exit_a_charge_while_vertically_separated() {
         .unwrap();
         assert_eq!(
             duel.phase,
-            Phase::Exit,
-            "a missed charge must still time out"
+            Phase::Turn,
+            "a missed charge must turn without reusing an uncommitted pass heading"
         );
     }
 }
@@ -1418,6 +1418,143 @@ fn spear_turn_waits_for_actual_velocity_to_finish_turning() {
 }
 
 #[test]
+fn spear_aborts_a_diving_charge_when_the_target_escapes_upward() {
+    for committed in [false, true] {
+        let bot = flight_scene(Vec3::new(100.0, 400.0, 100.0), Vec3::new(1.0, -1.5, 0.0));
+        bot.set_direction(-90.0, 45.0);
+        let mut enemy = target(&bot, 110.0, 100.0);
+        enemy.position.y = 410.0;
+        let target_velocity = Vec3::new(0.5, 1.0, 0.0);
+        let mut duel = Duel::new("spear".into(), "Enemy".into());
+        duel.phase = Phase::Charge;
+        duel.since = 100;
+        duel.last_rocket = 1;
+        duel.pass_committed = committed;
+        duel.pass_heading = Vec3::new(1.0, 0.0, 0.0);
+        duel.pass_target = Vec3::new(105.0, 400.0, 100.0);
+        let initial_distance = bot.position().distance_squared_to(enemy.position).sqrt();
+        let mut largest_distance = initial_distance;
+        let mut recovered = false;
+        for tick in 120..165 {
+            enemy.aim = enemy.position + Vec3::new(0.0, 0.9, 0.0);
+            let physics = bot.get_component::<Physics>().unwrap();
+            duel.spear(&bot, tick, "Test", &enemy, target_velocity, &physics)
+                .unwrap();
+            if tick == 120 {
+                assert_eq!(
+                    duel.phase,
+                    Phase::Turn,
+                    "do not finish a 100-tick dive below an ascending target"
+                );
+                assert!(bot.get_component::<LookDirection>().unwrap().x_rot() < 0.0);
+            }
+            advance_flight_without_collision(&bot, tick.saturating_sub(duel.last_rocket) < 20);
+            enemy.position += target_velocity;
+            let distance = bot.position().distance_squared_to(enemy.position).sqrt();
+            largest_distance = largest_distance.max(distance);
+            recovered |= bot.get_component::<Physics>().unwrap().velocity.y > 0.0;
+            packet_tick(&bot);
+        }
+        assert!(
+            recovered,
+            "the pullout must reverse actual downward momentum"
+        );
+        assert!(
+            largest_distance < 45.0,
+            "distance grew to {largest_distance}"
+        );
+    }
+}
+
+#[test]
+fn spear_uncommitted_timeout_turns_toward_the_target_instead_of_an_old_pass() {
+    let bot = flight_scene(Vec3::new(100.0, 400.0, 100.0), Vec3::new(1.5, 0.0, 0.0));
+    let mut enemy = target(&bot, 130.0, 100.0);
+    enemy.position.y = 400.0;
+    enemy.aim.y = 400.9;
+    let mut duel = Duel::new("spear".into(), "Enemy".into());
+    duel.phase = Phase::Charge;
+    duel.since = 1;
+    duel.pass_heading = Vec3::new(0.0, 0.0, -1.0);
+    duel.last_rocket = 100;
+    let physics = bot.get_component::<Physics>().unwrap();
+    duel.spear(&bot, 112, "Test", &enemy, Vec3::ZERO, &physics)
+        .unwrap();
+    assert_eq!(duel.phase, Phase::Turn);
+    assert!(direction(&bot).x > 0.9);
+}
+
+#[test]
+fn spear_charge_timeout_preserves_a_warm_nearby_hit_window() {
+    let bot = flight_scene(Vec3::new(100.0, 400.0, 100.0), Vec3::new(1.6, 0.0, 0.0));
+    {
+        let mut ecs = bot.ecs.lock();
+        ecs.get_mut::<Inventory>(bot.entity)
+            .unwrap()
+            .selected_hotbar_slot = 3;
+        ecs.get_mut::<LastSentSelectedHotbarSlot>(bot.entity)
+            .unwrap()
+            .slot = 3;
+    }
+    let mut enemy = target(&bot, 104.0, 100.0);
+    enemy.position.y = 400.0;
+    enemy.aim.y = 400.9;
+    let mut duel = Duel::new("spear".into(), "Enemy".into());
+    duel.phase = Phase::Charge;
+    duel.since = 1;
+    duel.charging = true;
+    duel.last_use = 80;
+    duel.last_rocket = 1;
+    assert!(crate::aerial::use_item(&bot, InteractionHand::MainHand));
+    packet_tick(&bot);
+    let physics = bot.get_component::<Physics>().unwrap();
+    duel.spear(
+        &bot,
+        102,
+        "Test",
+        &enemy,
+        Vec3::new(-1.6, 0.0, 0.0),
+        &physics,
+    )
+    .unwrap();
+    assert!(
+        duel.charging,
+        "timeout must not release a spear already within hit range"
+    );
+    assert!(duel.pass_committed);
+    assert_eq!(duel.phase, Phase::Exit);
+}
+
+#[test]
+fn spear_exit_deadline_advances_even_while_terrain_avoidance_controls_input() {
+    let bot = flight_scene(Vec3::new(100.0, 69.0, 100.0), Vec3::new(1.7, -0.35, 0.0));
+    stone_box(&bot, [109, 62, 97], [109, 78, 106]);
+    let enemy = target(&bot, 125.0, 100.0);
+    let mut duel = Duel::new("spear".into(), "Enemy".into());
+    duel.phase = Phase::Exit;
+    duel.since = 100;
+    duel.pass_heading = Vec3::new(1.0, 0.0, 0.0);
+    let physics = bot.get_component::<Physics>().unwrap();
+    duel.spear(&bot, 111, "Test", &enemy, Vec3::ZERO, &physics)
+        .unwrap();
+    assert_eq!(duel.phase, Phase::Turn);
+    assert!((bot.get_component::<LookDirection>().unwrap().x_rot() + 35.0).abs() < 0.2);
+    advance_flight_without_collision(&bot, false);
+}
+
+#[test]
+fn navigation_telemetry_does_not_report_a_stale_exit_phase() {
+    let mut duel = Duel::new("spear".into(), "Enemy".into());
+    duel.phase = Phase::Exit;
+    for mode in ["shared", "last_seen", "search", "home", "idle"] {
+        duel.tracking_mode = Some(mode);
+        assert_eq!(duel.telemetry().phase, mode);
+    }
+    duel.tracking_mode = None;
+    assert_eq!(duel.telemetry().phase, "Exit");
+}
+
+#[test]
 fn lost_or_dead_target_keeps_floor_collision_protection() {
     for dead in [false, true] {
         let bot = flight_scene(Vec3::new(100.0, 67.0, 100.0), Vec3::new(1.6, -0.7, 0.0));
@@ -1665,7 +1802,7 @@ fn spear_keeps_its_live_opponent_when_another_becomes_nearer() {
 fn hidden_locked_target_is_pursued_without_attacking_a_nearer_replacement() {
     let bot = client();
     let selected = enemy(&bot, "EnemyFar", 120.0);
-    let mut duel = Duel::new("mace".into(), "Enemy".into());
+    let mut duel = Duel::new("mace".into(), "=EnemyFar".into());
     duel.phase = Phase::Recover;
     duel.tick(&bot, 100, "Test").unwrap();
     bot.ecs
@@ -1986,41 +2123,58 @@ fn cold_spear_close_pass_still_exits_without_queuing_a_melee_hit() {
 
 #[test]
 fn turn_finishes_against_a_moving_bearing_then_charge_reacquires_the_live_target() {
-    let bot = client();
-    let physics = Physics::default();
+    let bot = flight_scene(Vec3::new(100.0, 400.0, 100.0), Vec3::new(1.6, 0.0, 0.0));
     let mut duel = Duel::new("spear".into(), "Enemy".into());
-    duel.last_rocket = 100;
+    duel.last_rocket = 1;
     duel.turn_yaw = Some(-135.0);
     duel.pass_committed = true;
     duel.phase(Phase::Turn, 100, "Test");
     assert_eq!(duel.turn_yaw, None);
-    let mut latched = None;
+    let mut moving = target(&bot, 80.0, 100.0);
+    moving.position.y = 400.0;
+    let target_velocity = Vec3::new(0.0, 0.0, 1.2);
     let mut finished_at = None;
-    for offset in 0..=20 {
-        // Keep the live target well ahead of the current turn, reproducing an orbit.
-        let yaw = bot.get_component::<LookDirection>().unwrap().y_rot() + 120.0;
-        let radians = f64::from(yaw).to_radians();
-        let moving = target(
+    for offset in 0..=60 {
+        moving.aim = moving.position + Vec3::new(0.0, 0.9, 0.0);
+        let physics = bot.get_component::<Physics>().unwrap();
+        duel.spear(
             &bot,
-            100.0 - radians.sin() * 12.0,
-            100.0 + radians.cos() * 12.0,
-        );
-        duel.spear(&bot, 100 + offset, "Test", &moving, Vec3::ZERO, &physics)
-            .unwrap();
-        packet_tick(&bot);
-        let initial = *latched.get_or_insert(duel.turn_yaw.unwrap());
-        assert_eq!(
-            duel.turn_yaw,
-            Some(initial),
-            "turn destination must not chase the moving bearing"
-        );
+            100 + offset,
+            "Test",
+            &moving,
+            target_velocity,
+            &physics,
+        )
+        .unwrap();
         if duel.phase == Phase::Charge {
+            let to_target = moving.position - bot.position();
+            let alignment = (physics.velocity.x * to_target.x + physics.velocity.z * to_target.z)
+                / (physics.velocity.horizontal_distance_squared()
+                    * to_target.horizontal_distance_squared())
+                .sqrt();
+            assert!(
+                alignment > 0.8,
+                "stale turn heading released Charge with course alignment {alignment}"
+            );
+            let closing = ((physics.velocity.x - target_velocity.x) * to_target.x
+                + (physics.velocity.z - target_velocity.z) * to_target.z)
+                / to_target.horizontal_distance_squared().sqrt();
+            assert!(
+                closing > 0.0,
+                "actual motion must close on the moving target"
+            );
             finished_at = Some(100 + offset);
             break;
         }
+        advance_flight_without_collision(
+            &bot,
+            (100 + offset).saturating_sub(duel.last_rocket) < 20,
+        );
+        moving.position += target_velocity;
+        packet_tick(&bot);
     }
     let finished_at =
-        finished_at.expect("turn should complete within twenty ticks despite target motion");
+        finished_at.expect("a real high-speed turn must catch the moving target bearing");
     assert!(
         !duel.pass_committed,
         "a new charge must discard the previous pass plane"
@@ -2030,8 +2184,8 @@ fn turn_finishes_against_a_moving_bearing_then_charge_reacquires_the_live_target
     let radians = f64::from(desired).to_radians();
     let new_target = target(
         &bot,
-        100.0 - radians.sin() * 10.0,
-        100.0 + radians.cos() * 10.0,
+        bot.position().x - radians.sin() * 10.0,
+        bot.position().z + radians.cos() * 10.0,
     );
     duel.spear(
         &bot,
@@ -2039,7 +2193,7 @@ fn turn_finishes_against_a_moving_bearing_then_charge_reacquires_the_live_target
         "Test",
         &new_target,
         Vec3::ZERO,
-        &physics,
+        &bot.get_component::<Physics>().unwrap(),
     )
     .unwrap();
     let after = bot.get_component::<LookDirection>().unwrap().y_rot();
@@ -2048,6 +2202,5 @@ fn turn_finishes_against_a_moving_bearing_then_charge_reacquires_the_live_target
         error(after) < error(before),
         "charge must steer toward the target's new position"
     );
-    assert_eq!(duel.phase, Phase::Charge);
     assert!(!duel.pass_committed);
 }

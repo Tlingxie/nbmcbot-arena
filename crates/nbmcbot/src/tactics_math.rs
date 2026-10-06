@@ -8,6 +8,59 @@ pub fn intercept(position: [f64; 3], velocity: [f64; 3], ticks: f64) -> [f64; 3]
     std::array::from_fn(|i| position[i] + velocity[i].clamp(-2.0, 2.0) * t)
 }
 
+/// Predict a nearby spear pass without leading through the attacker's position.
+pub fn spear_intercept(
+    position: [f64; 3],
+    own_velocity: [f64; 3],
+    target: [f64; 3],
+    target_velocity: [f64; 3],
+) -> [f64; 3] {
+    if !target.into_iter().all(f64::is_finite) {
+        return if position.into_iter().all(f64::is_finite) {
+            position
+        } else {
+            [0.0; 3]
+        };
+    }
+    if ![position, own_velocity, target_velocity]
+        .into_iter()
+        .flatten()
+        .all(f64::is_finite)
+    {
+        return target;
+    }
+    let offset = std::array::from_fn::<_, 3, _>(|i| target[i] - position[i]);
+    let distance = offset[0].hypot(offset[1]).hypot(offset[2]);
+    if !distance.is_finite() || distance == 0.0 {
+        return target;
+    }
+    let velocity = cap_velocity(target_velocity);
+    let target_speed = velocity[0].hypot(velocity[1]).hypot(velocity[2]);
+    if target_speed == 0.0 {
+        return target;
+    }
+    let radial_own: f64 = (0..3)
+        .map(|i| own_velocity[i] * (offset[i] / distance))
+        .sum();
+    let radial_target: f64 = (0..3).map(|i| velocity[i] * (offset[i] / distance)).sum();
+    let closing = radial_own - radial_target;
+    let ticks = if distance <= 12.0 {
+        if closing.is_finite() && closing > 0.1 && radial_own > 0.0 {
+            (distance / closing).min(4.0)
+        } else {
+            // Diverging or equal-speed pursuit has no short straight-line intercept.
+            1.0
+        }
+    } else {
+        let own_speed = own_velocity[0]
+            .hypot(own_velocity[1])
+            .hypot(own_velocity[2]);
+        (distance / own_speed.max(0.5)).min(4.0)
+    };
+    let ticks = ticks.min((distance * 0.5).min(4.0) / target_speed);
+    std::array::from_fn(|i| target[i] + velocity[i] * ticks)
+}
+
 /// Predict up to six ticks, moving before each turn; positive turns point +X toward +Z.
 pub fn intercept_turning(
     mut position: [f64; 3],
@@ -147,6 +200,116 @@ pub fn passed_target(position: [f64; 3], target: [f64; 3], heading: [f64; 3]) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spear_head_on_lead_meets_halfway_without_collapsing_onto_self_at_any_yaw() {
+        for yaw in [0.0_f64, 0.37, 1.57, 2.9, 4.8] {
+            let (sin, cos) = yaw.sin_cos();
+            let point = spear_intercept(
+                [10.0, 64.0, -20.0],
+                [1.6 * cos, 0.0, 1.6 * sin],
+                [10.0 + 6.0 * cos, 64.0, -20.0 + 6.0 * sin],
+                [-1.6 * cos, 0.0, -1.6 * sin],
+            );
+            let expected = [10.0 + 3.0 * cos, 64.0, -20.0 + 3.0 * sin];
+            for (actual, expected) in point.into_iter().zip(expected) {
+                assert!((actual - expected).abs() < 1e-10, "yaw {yaw}: {point:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn spear_vertical_head_on_lead_uses_vertical_closure() {
+        assert_eq!(
+            spear_intercept(
+                [10.0, 70.0, 20.0],
+                [0.0, 1.6, 0.0],
+                [10.0, 76.0, 20.0],
+                [0.0, -1.6, 0.0],
+            ),
+            [10.0, 73.0, 20.0]
+        );
+    }
+
+    #[test]
+    fn spear_equal_speed_or_diverging_motion_uses_only_a_short_lead() {
+        for own_x in [1.6, 0.2, -1.6] {
+            let point = spear_intercept(
+                [0.0, 64.0, 0.0],
+                [own_x, 0.0, 0.0],
+                [6.0, 64.0, 0.0],
+                [1.6, 0.0, 0.0],
+            );
+            assert!((point[0] - 7.6).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn spear_caps_total_target_speed_instead_of_independent_axes() {
+        let point = spear_intercept([0.0; 3], [-1.0, 0.0, 0.0], [12.0, 0.0, 0.0], [f64::MAX; 3]);
+        let delta = [point[0] - 12.0, point[1], point[2]];
+        assert!((delta[0].hypot(delta[1]).hypot(delta[2]) - 2.0).abs() < 1e-10);
+        assert!((delta[0] - delta[1]).abs() < 1e-10);
+        assert!((delta[1] - delta[2]).abs() < 1e-10);
+    }
+
+    #[test]
+    fn spear_lead_respects_half_separation_and_four_block_total_budget() {
+        for distance in [0.0, 0.001, 0.5, 2.0, 6.0, 12.0, 12.001, 100.0] {
+            for velocity in [[100.0; 3], [-1.6, 0.0, 0.0], [0.0, 2.0, 2.0]] {
+                let target = [distance, 64.0, 0.0];
+                let point = spear_intercept([0.0, 64.0, 0.0], [1.6, 0.0, 0.0], target, velocity);
+                let lead = std::array::from_fn::<_, 3, _>(|i| point[i] - target[i]);
+                assert!(
+                    lead[0].hypot(lead[1]).hypot(lead[2]) <= (distance * 0.5).min(4.0) + 1e-10,
+                    "distance {distance}, velocity {velocity:?}: {point:?}"
+                );
+            }
+        }
+        assert_eq!(
+            spear_intercept(
+                [0.0; 3],
+                [0.5, 0.0, 0.0],
+                [100.0, 0.0, 0.0],
+                [0.25, 0.0, 0.0]
+            ),
+            [101.0, 0.0, 0.0],
+            "far pursuit must not extrapolate beyond four ticks"
+        );
+    }
+
+    #[test]
+    fn spear_invalid_or_overflowing_samples_never_produce_nonfinite_aim() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for field in 0..4 {
+                let mut inputs = [
+                    [0.0, 64.0, 0.0],
+                    [1.6, 0.0, 0.0],
+                    [6.0, 64.0, 0.0],
+                    [-1.6, 0.0, 0.0],
+                ];
+                inputs[field][0] = bad;
+                let point = spear_intercept(inputs[0], inputs[1], inputs[2], inputs[3]);
+                assert!(
+                    point.into_iter().all(f64::is_finite),
+                    "field {field}: {point:?}"
+                );
+                if field != 2 {
+                    assert_eq!(point, inputs[2]);
+                }
+            }
+        }
+        let target = [f64::MAX; 3];
+        assert_eq!(
+            spear_intercept([-f64::MAX; 3], [0.0; 3], target, [1.0; 3]),
+            target
+        );
+        assert!(
+            spear_intercept([f64::NAN; 3], [0.0; 3], [f64::NAN; 3], [0.0; 3])
+                .into_iter()
+                .all(f64::is_finite)
+        );
+    }
 
     #[test]
     fn zero_turn_rate_preserves_both_linear_interfaces() {

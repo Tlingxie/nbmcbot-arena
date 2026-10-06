@@ -131,19 +131,86 @@ fn pursue(result: Tracking, expected: &str) -> Vec3 {
 }
 
 #[test]
-fn lock_survives_nearer_enemy_and_temporary_loss_of_visibility() {
+fn lock_survives_nearer_enemy_while_visible_but_switches_after_loss() {
     let bot = client();
     let first = enemy(&bot, "Spear001", 12.0, &[bot.entity]);
     let mut tracker = Tracker::default();
     assert_eq!(visible(tracker.update(&bot, "Spear", 1)), first);
-    enemy(&bot, "Spear002", 3.0, &[bot.entity]);
+    let second = enemy(&bot, "Spear002", 3.0, &[bot.entity]);
     assert_eq!(visible(tracker.update(&bot, "Spear", 2)), first);
     bot.ecs.lock().get_mut::<LoadedBy>(first).unwrap().clear();
+    assert_eq!(visible(tracker.update(&bot, "Spear", 3)), second);
+    assert_eq!(tracker.target_name(), Some("Spear002"));
+}
+
+#[test]
+fn automatic_shared_target_is_local_but_exact_target_can_be_remote() {
+    let bot = client();
+    let observer = ally(&bot, "Mace002");
+    enemy(&bot, "Spear001", 1304.0, &[observer]);
+    let mut automatic = Tracker::default();
+    assert!(matches!(automatic.update(&bot, "Spear", 1), Tracking::Idle));
+    assert_eq!(automatic.target_name(), None);
+    let mut exact = Tracker::default();
     assert_eq!(
-        pursue(tracker.update(&bot, "Spear", 3), "last_seen").x,
-        12.0
+        pursue(exact.update(&bot, "=Spear001", 1), "shared").x,
+        1304.0
     );
-    assert_eq!(tracker.target_name(), Some("Spear001"));
+}
+
+#[test]
+fn remote_shared_lock_is_cleared_without_last_seen_fallback() {
+    let bot = client();
+    let observer = ally(&bot, "Mace002");
+    let target = enemy(&bot, "Spear001", 128.0, &[observer]);
+    let mut tracker = Tracker::default();
+    assert_eq!(pursue(tracker.update(&bot, "Spear", 1), "shared").x, 128.0);
+    bot.ecs.lock().get_mut::<Position>(target).unwrap().x = 129.0;
+    assert!(matches!(tracker.update(&bot, "Spear", 2), Tracking::Idle));
+    assert_eq!(tracker.target_name(), None);
+    bot.ecs.lock().get_mut::<LoadedBy>(target).unwrap().clear();
+    assert!(matches!(tracker.update(&bot, "Spear", 3), Tracking::Idle));
+}
+
+#[test]
+fn remembered_automatic_lock_outside_engagement_returns_home() {
+    let bot = client();
+    let target = enemy(&bot, "Spear001", 12.0, &[bot.entity]);
+    let mut tracker = Tracker::default();
+    visible(tracker.update(&bot, "Spear", 1));
+    bot.ecs.lock().get_mut::<LoadedBy>(target).unwrap().clear();
+    bot.ecs.lock().get_mut::<Position>(bot.entity).unwrap().x = 200.0;
+    assert_eq!(pursue(tracker.update(&bot, "Spear", 2), "home").x, 0.0);
+    assert_eq!(tracker.target_name(), None);
+}
+
+#[test]
+fn shared_range_counts_vertical_separation() {
+    let bot = client();
+    let observer = ally(&bot, "Mace002");
+    let target = enemy(&bot, "Spear001", 100.0, &[observer]);
+    bot.ecs.lock().get_mut::<Position>(target).unwrap().y += 100.0;
+    assert!(matches!(
+        Tracker::default().update(&bot, "Spear", 1),
+        Tracking::Idle
+    ));
+}
+
+#[test]
+fn visible_enemy_overrides_shared_lock_and_visible_range_is_unrestricted() {
+    let bot = client();
+    let observer = ally(&bot, "Mace002");
+    enemy(&bot, "Spear001", 100.0, &[observer]);
+    let mut tracker = Tracker::default();
+    pursue(tracker.update(&bot, "Spear", 1), "shared");
+    let near = enemy(&bot, "Spear002", 5.0, &[bot.entity]);
+    assert_eq!(visible(tracker.update(&bot, "Spear", 2)), near);
+    let far_bot = client();
+    let far = enemy(&far_bot, "Spear001", 1304.0, &[far_bot.entity]);
+    assert_eq!(
+        visible(Tracker::default().update(&far_bot, "Spear", 1)),
+        far
+    );
 }
 
 #[test]
@@ -393,13 +460,13 @@ fn memory_retains_only_one_lock_and_extrapolates_at_most_twelve_blocks() {
     let bot = client();
     let first = enemy(&bot, "Spear001", 12.0, &[bot.entity]);
     let mut tracker = Tracker::default();
-    tracker.update(&bot, "Spear", 1);
+    tracker.update(&bot, "=Spear001", 1);
     bot.ecs.lock().get_mut::<Position>(first).unwrap().x = 1012.0;
-    tracker.update(&bot, "Spear", 2);
+    tracker.update(&bot, "=Spear001", 2);
     bot.ecs.lock().get_mut::<LoadedBy>(first).unwrap().clear();
     for tick in [10, 50, 100] {
         assert_eq!(
-            pursue(tracker.update(&bot, "Spear", tick), "last_seen").x,
+            pursue(tracker.update(&bot, "=Spear001", tick), "last_seen").x,
             1024.0
         );
     }

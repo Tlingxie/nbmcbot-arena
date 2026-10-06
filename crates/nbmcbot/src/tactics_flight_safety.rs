@@ -137,7 +137,7 @@ impl Flight<'_> {
                     && pass.age + u64::from(step) > 10
                     && math::passed_target(array(position), array(pass.point), array(pass.heading)))
                     || distance < 9.0
-                    || pass.age + u64::from(step) > 100
+                    || (pass.committed && pass.age + u64::from(step) > 100)
                 {
                     // Charge changes phase after choosing this tick's input.
                     // The first pullout movement is on the following tick.

@@ -97,7 +97,10 @@ impl Duel {
     pub(crate) fn telemetry(&self) -> DuelTelemetry<'_> {
         DuelTelemetry {
             style: &self.style,
-            phase: format!("{:?}", self.phase),
+            phase: self
+                .tracking_mode
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("{:?}", self.phase)),
             target: self.tracker.target_name(),
         }
     }
@@ -551,6 +554,30 @@ impl Duel {
             crate::aerial::release_use(bot);
             self.phase(Phase::Takeoff, tick, username);
         }
+        if self.phase == Phase::Charge {
+            let separation = target.position - p;
+            let distance = separation.length();
+            let toward_target = physics.velocity.dot(separation) / distance.max(0.01);
+            let opening = (velocity - physics.velocity).dot(separation) / distance.max(0.01);
+            let below_rising_target =
+                separation.y > 3.0 && physics.velocity.y < -0.35 && velocity.y >= -0.1;
+            let completed_pass = self.pass_committed
+                && age > 10
+                && math::passed_target(array(p), array(self.pass_target), array(self.pass_heading));
+            if (age > 100 && !self.pass_committed && distance > 6.0)
+                || (age >= 4
+                    && !completed_pass
+                    && distance > 6.0
+                    && opening > 0.25
+                    && (toward_target < -0.1 || below_rising_target))
+            {
+                crate::aerial::release_use(bot);
+                self.charging = false;
+                self.phase(Phase::Turn, tick, username);
+                action(username, "spear_missed_pass", tick);
+            }
+        }
+        let age = tick.saturating_sub(self.since);
         match self.phase {
             Phase::Takeoff => {
                 let (yaw, _) = angles(bot.eye_position(), target.aim);
@@ -608,16 +635,11 @@ impl Duel {
             Phase::Charge => {
                 let distance = horizontal_distance(p, target.position);
                 let contact_distance_sq = p.distance_squared_to(target.position);
-                let lead = math::intercept(
+                let lead = math::spear_intercept(
+                    array(p),
+                    array(physics.velocity),
                     array(target.position),
                     array(velocity),
-                    (distance
-                        / physics
-                            .velocity
-                            .horizontal_distance_squared()
-                            .sqrt()
-                            .max(0.5))
-                    .min(4.0),
                 );
                 aim(bot, Vec3::new(lead[0], lead[1] + 1.45, lead[2]), 18.0);
                 let boost = distance > 15.0 && tick.saturating_sub(self.last_rocket) > 28;
@@ -676,15 +698,13 @@ impl Duel {
                         -12.0
                     };
                 steer(bot, yaw, pitch, 12.0);
-                if self.avoid_flight_collision(
+                self.avoid_flight_collision(
                     bot,
                     physics,
                     tick,
                     username,
                     flight_safety::FlightIntent::new(false, flight_direction),
-                ) {
-                    return Ok(());
-                }
+                );
                 if age >= 10 {
                     crate::aerial::release_use(bot);
                     self.charging = false;
@@ -692,18 +712,17 @@ impl Duel {
                 }
             }
             Phase::Turn => {
-                // Complete the turn before reacquiring: chasing a continuously
-                // rotating bearing at speed can settle into an endless orbit.
-                let yaw = *self
-                    .turn_yaw
-                    .get_or_insert_with(|| angles(bot.eye_position(), target.aim).0);
-                let pitch = if p.y < target.position.y + 4.0 {
-                    -18.0
-                } else {
-                    0.0
-                };
+                let (yaw, pitch) = angles(bot.eye_position(), target.aim);
+                self.turn_yaw = Some(yaw);
+                let pitch = pitch.clamp(-35.0, 0.0);
                 steer(bot, yaw, pitch, 18.0);
-                let boost = tick.saturating_sub(self.last_rocket) > 28;
+                let d = direction(bot);
+                let heading = f64::from(yaw).to_radians();
+                let alignment = (-heading.sin() * d.x + heading.cos() * d.z)
+                    / d.horizontal_distance_squared().sqrt().max(0.01);
+                // Thrust follows the look direction. Wait until it points toward
+                // the current target, then use it to reverse the old momentum.
+                let boost = alignment > 0.85 && tick.saturating_sub(self.last_rocket) > 28;
                 if self.avoid_flight_collision(
                     bot,
                     physics,
@@ -716,15 +735,16 @@ impl Duel {
                 if boost {
                     self.rocket(bot, tick, username)?;
                 }
-                let d = direction(bot);
-                let heading = f64::from(yaw).to_radians();
-                let alignment = (-heading.sin() * d.x + heading.cos() * d.z)
-                    / d.horizontal_distance_squared().sqrt().max(0.01);
                 let speed = physics.velocity.horizontal_distance_squared().sqrt();
                 let course_alignment = (-heading.sin() * physics.velocity.x
                     + heading.cos() * physics.velocity.z)
                     / speed.max(0.01);
-                if age >= 8 && alignment > 0.94 && (speed < 0.2 || course_alignment > 0.8) {
+                let vertical_ready = target.position.y <= p.y + 4.0 || physics.velocity.y > -0.1;
+                if age >= 8
+                    && alignment > 0.94
+                    && (speed < 0.2 || course_alignment > 0.8)
+                    && vertical_ready
+                {
                     self.pass_heading = d;
                     self.pass_target = target.position;
                     self.phase(Phase::Charge, tick, username);

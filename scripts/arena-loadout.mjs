@@ -12,7 +12,7 @@ export function duelPlan(env = process.env) {
     { kind: 'mace-team', prefix: 'Mace', team: 'nbmc_mace', style: 'mace', enemy: 'Spear', x: -12, yaw: -90, count: Math.ceil(total / 2) },
     { kind: 'spear-team', prefix: 'Spear', team: 'nbmc_spear', style: mode === 'mace-vs-mace' ? 'mace' : 'spear', enemy: 'Mace', x: 12, yaw: 90, count: Math.floor(total / 2) },
   ];
-  if (mode === 'mace-vs-player') for (const group of groups) Object.assign(group, { team: 'nbmc_attackers', style: 'mace', enemy: `=${player}` });
+  if (mode === 'mace-vs-player') for (const group of groups) Object.assign(group, { team: 'nbmc_attackers', enemy: `=${player}` });
   return { mode, player, total, explicitTotal, groups };
 }
 

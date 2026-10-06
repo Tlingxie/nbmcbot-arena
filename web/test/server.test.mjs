@@ -44,3 +44,30 @@ test('spectating affects only selected online human; free view emits vanilla com
   assert.deepEqual(commands, [['server', 'gamemode spectator sdkl'], ['server', 'spectate Mace001 sdkl'], ['server', 'gamemode spectator sdkl'], ['server', 'execute as sdkl run spectate']]);
   await assert.rejects(arena.spectate({ viewer: 'Mace001', target: 'sdkl' }), /human/);
 });
+
+test('player rounds require a living online human and validate total bot count', async () => {
+  const state = new ArenaState();
+  const arena = new Arena({ root: '/unused', state });
+  arena.record = kind => { assert.equal(kind, 'server'); return {}; };
+  let prepared;
+  arena.prepareRound = async settings => { prepared = settings; };
+  state.observe('sdkl', { position: [0, 64, 0], health: 20, alive: true });
+  arena.humans.add('sdkl');
+  const settings = { mode: 'mace-vs-player', countdown: 0, botCount: 3, player: 'sdkl' };
+  for (const botCount of [0, 101, 1.5, '3']) await assert.rejects(arena.startRound({ ...settings, botCount }), { statusCode: 400 });
+  for (const player of ['sdkl\nsay bad', 'Mace001', null]) await assert.rejects(arena.startRound({ ...settings, player }), { statusCode: 400 });
+  await assert.rejects(arena.startRound({ ...settings, player: 'Missing' }), { statusCode: 409 });
+  state.observe('sdkl', { alive: false, health: 0 });
+  await assert.rejects(arena.startRound(settings), /复活/);
+  state.observe('sdkl', { position: [0, 64, 0], alive: true, health: 20 }, Date.now() - 2500);
+  await assert.rejects(arena.startRound(settings), { statusCode: 409 });
+  state.observe('sdkl', { position: [0, 64, 0], alive: true, health: 20 });
+  const round = await arena.startRound(settings);
+  assert.equal(round.state, 'preparing');
+  assert.deepEqual(prepared, settings);
+  await assert.rejects(arena.startRound(settings), { statusCode: 409 });
+  state.round.state = 'running';
+  await assert.rejects(arena.startRound({ mode: 'mace-vs-mace', countdown: 0, botCount: 1 }), { statusCode: 400 });
+  await arena.startRound({ mode: 'mace-vs-mace', countdown: 0, botCount: 2, player: 'ignored' });
+  assert.deepEqual(prepared, { mode: 'mace-vs-mace', countdown: 0, botCount: 2, player: null });
+});

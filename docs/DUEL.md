@@ -133,6 +133,32 @@ The dive aim stays below its current altitude even after it passes its old
 climb height. Near-ground early recovery and the existing dive timeout remain
 active, and an actual chestplate swap still needs a valid interception window.
 
+Mace fall safety rechecks the interception window and actual terrain
+each tick while dropping. If a missed pass no longer has a viable interception,
+it switches back to the elytra in that tick, enters Recover, and pitches upward
+to reduce descent speed. Low-altitude gliding also uses a flight guard rather
+than relying only on target height. A legal close-range smash retains priority;
+the guard does not grant fall immunity or guarantee zero damage. If the server
+does not register a legal near-ground attack as a hit, that pass can still
+cause fall damage.
+
+The 2026-10-05 mace safety candidate passed 174 workspace tests (98 tactics
+tests), formatting, and strict Clippy. In the controlled 45-second miss test,
+the target moved sideways 25 blocks at the first armor swap: the earlier
+binary recorded three fall-damage events, while the candidate recorded no
+Mace damage or deaths, with all four alive. It issued two attack attempts;
+Mace001 registered one server-confirmed smash and killed the target. Logs
+show airborne missed-drop recovery and terrain avoidance, followed by
+home/idle after the target died; this was not 45 seconds of continuous combat.
+In a separate 60-second 4v4 window, all four Mace bots survived with zero fall
+or kinetic damage. Mace002 hit Spear002 with a server-confirmed smash;
+Mace001 and Mace003 each received normal enemy damage from Spear001 and
+Spear003, respectively. These finite samples do not guarantee long-term
+safety or zero damage. Reports: `.runtime/mace-clearance-before-miss.json`,
+`.runtime/mace-clearance-after-miss.json`, and
+`.runtime/mace-clearance-after-duel.json`. Candidate executable SHA-256:
+`0620c2127f1febb97e9183af2fbe12fd25fbd6aacd5f02bd189245de40616c14`.
+
 Spear passes use three-dimensional distance for the near-contact commitment
 and early exit. Flying directly above or below an opponent no longer counts
 as a close pass that triggers an immediate pull-up and turn.

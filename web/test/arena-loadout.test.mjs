@@ -15,7 +15,8 @@ test('player mode requires safe exact target and one friendly team', () => {
     assert.throws(()=>duelPlan({NBMCBOT_DUEL_MODE:'mace-vs-player',NBMCBOT_DUEL_PLAYER:value}));
   }
   const plan = duelPlan({NBMCBOT_DUEL_MODE:'mace-vs-player',NBMCBOT_DUEL_PLAYER:'sdkl',NBMCBOT_DUEL_TOTAL:'7'});
-  assert.ok(plan.groups.every(group=>group.style==='mace'&&group.enemy==='=sdkl'));
+  assert.deepEqual(plan.groups.map(group=>[group.style,group.count]),[['mace',4],['spear',3]]);
+  assert.ok(plan.groups.every(group=>group.enemy==='=sdkl'));
   assert.equal(new Set(plan.groups.map(group=>group.team)).size,1);
   const commands = loadoutCommands(plan, plan.groups.map(group=>({...group,names:Array.from({length:group.count},(_,i)=>`${group.prefix}${String(i+1).padStart(3,'0')}`)})));
   assert.ok(commands.includes('team leave sdkl'));
@@ -29,6 +30,21 @@ test('player mode requires safe exact target and one friendly team', () => {
   assert.equal(new Set(teleports.map(command=>command.split(' ').slice(2,5).join(' '))).size,7);
   assert.ok(commands.filter(command=>command.includes('hotbar.0 with minecraft:mace')).every(command=>command.includes('"minecraft:wind_burst":3')));
   assert.ok(commands.includes('team modify nbmc_attackers friendlyFire false'));
+});
+
+test('player siege equips a mixed roster while both styles retain the same exact target', () => {
+  for (const total of [1,3,10,50,100]) {
+    const plan = duelPlan({NBMCBOT_DUEL_MODE:'mace-vs-player',NBMCBOT_DUEL_PLAYER:'sdkl',NBMCBOT_DUEL_TOTAL:String(total)});
+    const groups = plan.groups.filter(group=>group.count>0).map(group=>({...group,names:Array.from({length:group.count},(_,i)=>`${group.prefix}${String(i+1).padStart(3,'0')}`)}));
+    const commands = loadoutCommands(plan,groups);
+    assert.equal(commands.filter(command=>/^item replace entity Mace\d+ hotbar\.0 with minecraft:mace/.test(command)).length,Math.ceil(total/2));
+    assert.equal(commands.filter(command=>/^item replace entity Spear\d+ hotbar\.0 with minecraft:netherite_spear/.test(command)).length,Math.floor(total/2));
+    assert.ok(groups.every(group=>group.enemy==='=sdkl'&&group.team==='nbmc_attackers'));
+    for (const name of groups.flatMap(group=>group.names)) {
+      assert.ok(commands.some(command=>command.startsWith(`item replace entity ${name} armor.chest with minecraft:elytra`)));
+      assert.ok(commands.some(command=>command.startsWith(`item replace entity ${name} weapon.offhand with minecraft:firework_rocket`)));
+    }
+  }
 });
 
 test('records must match explicit total but old records remain compatible', () => {

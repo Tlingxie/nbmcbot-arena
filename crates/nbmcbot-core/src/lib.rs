@@ -88,12 +88,15 @@ pub fn parse_command(input: &str) -> Result<Command, CommandError> {
         ("follow", [name]) => Ok(Command::Follow((*name).into())),
         ("attack", [name]) => Ok(Command::Attack((*name).into())),
         ("fight", [name]) => Ok(Command::Fight((*name).into())),
-        ("duel", [style @ ("mace" | "spear"), enemy_prefix])
-            if (1..=16).contains(&enemy_prefix.len())
-                && enemy_prefix
+        ("duel", [style @ ("mace" | "spear"), enemy_prefix]) => {
+            let name = enemy_prefix.strip_prefix('=').unwrap_or(enemy_prefix);
+            if !(1..=16).contains(&name.len())
+                || !name
                     .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_') =>
-        {
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            {
+                return Err(error());
+            }
             Ok(Command::Duel {
                 style: (*style).into(),
                 enemy_prefix: (*enemy_prefix).into(),
@@ -276,6 +279,39 @@ mod tests {
                 },
                 "{input}"
             );
+        }
+    }
+
+    #[test]
+    fn duel_accepts_exact_player_names_without_converting_them_to_prefixes() {
+        for input in [
+            "duel mace =sdkl",
+            "duel spear =Player_01",
+            "duel mace =abcdefghijklmnop",
+        ] {
+            let words: Vec<_> = input.split_whitespace().collect();
+            assert_eq!(
+                parse_command(input).unwrap(),
+                Command::Duel {
+                    style: words[1].into(),
+                    enemy_prefix: words[2].into(),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn duel_rejects_empty_or_invalid_exact_player_names() {
+        for input in [
+            "duel mace =",
+            "duel spear ==sdkl",
+            "duel mace =bad-name",
+            "duel mace =abcdefghijklmnopq",
+            "duel mace =sdkl extra",
+            "duel mace =@a",
+            "duel mace =\u{4eba}",
+        ] {
+            assert!(parse_command(input).is_err(), "{input}");
         }
     }
 

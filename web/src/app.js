@@ -1,6 +1,22 @@
 import { Recorder } from './recording.js';
 import { drawMap } from './map.js';
 
+export function validateRoundSettings(input, players) {
+  const { mode, player } = input;
+  const countdown = Number(input.countdown);
+  const botCount = Number(input.botCount);
+  if (!['mace-vs-player', 'mace-vs-mace', 'mace-vs-spear'].includes(mode)) throw new Error('请选择有效的对战模式');
+  if (String(input.botCount).trim() === '' || !Number.isInteger(botCount) || botCount < 1 || botCount > 100) throw new Error('机器人总人数必须为 1 到 100 的整数');
+  if (mode !== 'mace-vs-player' && botCount < 2) throw new Error('两队对战至少需要 2 个机器人');
+  if (String(input.countdown).trim() === '' || !Number.isInteger(countdown) || countdown < 0 || countdown > 30) throw new Error('倒计时必须为 0 到 30 的整数');
+  const payload = { mode, countdown, botCount };
+  if (mode === 'mace-vs-player') {
+    if (!players.some(entry => entry.name === player && ['observer', 'human'].includes(entry.team) && entry.connected && !entry.stale)) throw new Error('请选择真实在线的参与玩家');
+    payload.player = player;
+  }
+  return payload;
+}
+
 const $ = id => document.getElementById(id);
 let state = { players: [], events: [], recordings: [], round: {} };
 let selected = null;
@@ -61,8 +77,18 @@ function updateButtons() {
   $('spectate').disabled = !online || !viewerAvailable || !target || !target.connected || target.stale || target.alive === false || target.name === $('viewer').value;
   $('free-view').disabled = !online || !viewerAvailable;
   $('viewer').disabled = !viewerAvailable;
-  $('round-start').disabled = !online || ['starting', 'countdown', 'preparing'].includes(state.round?.state);
+  let settingsError = '';
+  try { roundSettings(); } catch (error) { settingsError = error.message; }
+  $('round-validation').textContent = settingsError; $('round-validation').hidden = !settingsError;
+  $('bot-count').setAttribute('aria-invalid', String(!Number.isInteger(Number($('bot-count').value)) || Number($('bot-count').value) < 1 || Number($('bot-count').value) > 100));
+  const playerMode = $('round-mode').value === 'mace-vs-player';
+  $('round-player-field').hidden = !playerMode; $('round-loadout').hidden = !playerMode;
+  $('round-player').disabled = !playerMode || !$('round-player').value;
+  $('round-start').disabled = !online || Boolean(settingsError) || ['starting', 'countdown', 'preparing'].includes(state.round?.state);
   for (const button of pendingActions) button.disabled = true;
+}
+function roundSettings() {
+  return validateRoundSettings({ mode: $('round-mode').value, countdown: $('countdown').value, botCount: $('bot-count').value, player: $('round-player').value }, state.players);
 }
 function freshText(player) {
   if (!player.connected) return '离线';
@@ -144,6 +170,14 @@ function render() {
     $('viewer').replaceChildren(...options);
     $('viewer').value = viewerNames.includes(previousViewer) ? previousViewer : viewerNames[0] ?? '';
   }
+  const participantNames = [...new Set(state.players.filter(entry => ['observer', 'human'].includes(entry.team) && entry.connected && !entry.stale).map(entry => entry.name))].sort();
+  const previousParticipant = $('round-player').value;
+  if ([...$('round-player').options].map(option => option.value).join(',') !== participantNames.join(',')) {
+    const options = participantNames.map(name => { const option = element('option', name); option.value = name; return option; });
+    if (!options.length) { const option = element('option', '等待玩家登录'); option.value = ''; options.push(option); }
+    $('round-player').replaceChildren(...options);
+    $('round-player').value = participantNames.includes(previousParticipant) ? previousParticipant : participantNames[0] ?? '';
+  }
   $('selected-name').textContent = player?.name ?? '尚未选择玩家';
   $('selected-details').textContent = player ? `${freshText(player)} · XYZ ${coordinates(player)} · ${player.source === 'self' ? '自身遥测' : '外部观测'}` : '从左侧名单选择跟拍目标';
   $('view-title').textContent = player ? `原版画面 · 已选 ${player.name}` : '原版游戏画面';
@@ -153,7 +187,7 @@ function render() {
   $('map-note').textContent = layout.points.length ? `${layout.points.length} 位有坐标 · ${layout.dimension ?? '维度未知'} · 范围约 ${Math.round(layout.span)} 格` : '暂无可用位置观测';
   const round = state.round ?? {};
   $('round-status').textContent = round.state ?? '待机';
-  $('round-note').textContent = round.error ?? (round.countdown > 0 ? `${round.countdown} 秒后开局` : '开启新局会重新开始竞技场对局。');
+  $('round-note').textContent = round.error ?? (['preparing', 'starting'].includes(round.state) ? '正在复活、装备并调整人数' : round.state === 'countdown' ? `${round.countdown} 秒后开局，请返回 Minecraft 窗口` : round.state === 'running' ? `${round.botCount ?? '—'} 位机器人正在对战${round.player ? ` · 围攻 ${round.player}` : ''}` : '开启新局会重新开始竞技场对局。');
   updateButtons();
 }
 function acceptState(next) {
@@ -168,12 +202,11 @@ async function refreshState() {
 
 $('search').addEventListener('input', renderRoster);
 $('viewer').addEventListener('change', updateButtons);
+for (const id of ['round-mode', 'round-player', 'bot-count', 'countdown']) $(id).addEventListener(id === 'bot-count' || id === 'countdown' ? 'input' : 'change', updateButtons);
 $('spectate').addEventListener('click', () => action($('spectate'), async () => { await mutate('/api/spectate', { viewer: $('viewer').value, target: selected }); notify(`已请求 ${$('viewer').value} 跟拍 ${selected}`); }));
 $('free-view').addEventListener('click', () => action($('free-view'), async () => { await mutate('/api/spectate', { viewer: $('viewer').value, target: null }); notify('已请求返回自由视角'); }));
 $('round-start').addEventListener('click', () => action($('round-start'), async () => {
-  const countdown = Number($('countdown').value);
-  if (!Number.isInteger(countdown) || countdown < 0 || countdown > 30) throw new Error('倒计时必须为 0 到 30 的整数');
-  await mutate('/api/rounds', { mode: $('round-mode').value, countdown }); notify('新一局已请求'); await refreshState();
+  await mutate('/api/rounds', roundSettings()); notify('新一局已请求'); await refreshState();
 }));
 $('capture').addEventListener('click', () => action($('capture'), async () => {
   video = await recorder.captureGame(); await video.play();

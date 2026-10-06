@@ -87,8 +87,11 @@ more rockets without resetting a round, run:
 node scripts/duel-arena.mjs resupply
 ```
 
-In `mace-vs-player`, both groups instead use maces and the same
-`nbmc_attackers` team with friendly fire disabled. Setup scatters bots around
+In `mace-vs-player`, `ceil(total / 2)` bots use Wind Burst III maces and
+`floor(total / 2)` bots use spears, elytras and rockets. For an odd total,
+the mace group has one extra bot. Both groups join the same `nbmc_attackers`
+team with friendly fire disabled and target the selected human by exact name.
+The internal mode name remains `mace-vs-player`. Setup scatters bots around
 a ring rather than overlapping their spawn positions. It also changes the
 selected human: restores their own camera before survival mode, leaves the bot
 team, removes the old `nbmc_duel` supply tag, and teleports them to `0 64 0`.

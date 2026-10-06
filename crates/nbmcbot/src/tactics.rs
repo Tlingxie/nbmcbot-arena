@@ -15,6 +15,8 @@ use serde_json::json;
 
 #[path = "tactics_equipment.rs"]
 mod equipment;
+#[path = "tactics_flight_safety.rs"]
+mod flight_safety;
 #[path = "tactics_mace.rs"]
 mod mace_flight;
 #[path = "tactics_math.rs"]
@@ -79,6 +81,7 @@ pub(crate) struct Duel {
     mace_climb_height: Option<f64>,
     mace_recovery_ticks: u8,
     turn_yaw: Option<f32>,
+    flight_safety: flight_safety::FlightSafety,
     pursuit: pursuit::Pursuit,
     tracker: tracking::Tracker,
     tracking_mode: Option<&'static str>,
@@ -132,6 +135,7 @@ impl Duel {
             mace_climb_height: None,
             mace_recovery_ticks: 0,
             turn_yaw: None,
+            flight_safety: flight_safety::FlightSafety::default(),
             pursuit: pursuit::Pursuit::default(),
             tracker: tracking::Tracker::default(),
             tracking_mode: None,
@@ -149,6 +153,7 @@ impl Duel {
         self.mace_ground_y = None;
         self.mace_climb_height = None;
         self.mace_recovery_ticks = 0;
+        self.flight_safety = flight_safety::FlightSafety::default();
         self.reset_velocity();
     }
 
@@ -536,7 +541,9 @@ impl Duel {
     ) -> Result<()> {
         let p = bot.position();
         let age = tick.saturating_sub(self.since);
-        let gliding = bot.get_component::<FallFlying>().is_some_and(|f| f.0);
+        let flight_direction = bot.get_component::<LookDirection>().unwrap_or_default();
+        let gliding =
+            !physics.on_ground() && bot.get_component::<FallFlying>().is_some_and(|f| f.0);
         ensure!(
             has_chest(bot, ItemKind::Elytra),
             "spear duel needs an equipped elytra"
@@ -559,6 +566,15 @@ impl Duel {
                 if gliding && !physics.on_ground() {
                     bot.set_jumping(false);
                     bot.walk(WalkDirection::None);
+                    if self.avoid_flight_collision(
+                        bot,
+                        physics,
+                        tick,
+                        username,
+                        flight_safety::FlightIntent::new(true, flight_direction),
+                    ) {
+                        return Ok(());
+                    }
                     self.rocket(bot, tick, username)?;
                     self.phase(Phase::Climb, tick, username);
                 }
@@ -566,7 +582,17 @@ impl Duel {
             Phase::Climb => {
                 let (yaw, _) = angles(bot.eye_position(), target.aim);
                 steer(bot, yaw, -22.0, 10.0);
-                if physics.velocity.horizontal_distance_squared() < 0.64 {
+                let boost = physics.velocity.horizontal_distance_squared() < 0.64;
+                if self.avoid_flight_collision(
+                    bot,
+                    physics,
+                    tick,
+                    username,
+                    flight_safety::FlightIntent::new(boost, flight_direction),
+                ) {
+                    return Ok(());
+                }
+                if boost {
                     self.rocket(bot, tick, username)?;
                 }
                 if equipped
@@ -597,6 +623,17 @@ impl Duel {
                     .min(4.0),
                 );
                 aim(bot, Vec3::new(lead[0], lead[1] + 1.45, lead[2]), 18.0);
+                let boost = distance > 15.0 && tick.saturating_sub(self.last_rocket) > 28;
+                if self.avoid_flight_collision(
+                    bot,
+                    physics,
+                    tick,
+                    username,
+                    flight_safety::FlightIntent::new(boost, flight_direction)
+                        .with_pass(self, target, velocity, age),
+                ) {
+                    return Ok(());
+                }
                 if equipped
                     && !self.charging
                     && tick.saturating_sub(self.last_rocket) >= 2
@@ -606,7 +643,7 @@ impl Duel {
                     self.last_use = tick;
                     action(username, "spear_charge", tick);
                 }
-                if distance > 15.0 && tick.saturating_sub(self.last_rocket) > 28 {
+                if boost {
                     crate::aerial::release_use(bot);
                     self.charging = false;
                     self.rocket(bot, tick, username)?;
@@ -642,6 +679,15 @@ impl Duel {
                         -12.0
                     };
                 steer(bot, yaw, pitch, 12.0);
+                if self.avoid_flight_collision(
+                    bot,
+                    physics,
+                    tick,
+                    username,
+                    flight_safety::FlightIntent::new(false, flight_direction),
+                ) {
+                    return Ok(());
+                }
                 if age >= 10 {
                     crate::aerial::release_use(bot);
                     self.charging = false;
@@ -660,14 +706,28 @@ impl Duel {
                     0.0
                 };
                 steer(bot, yaw, pitch, 18.0);
-                if tick.saturating_sub(self.last_rocket) > 28 {
+                let boost = tick.saturating_sub(self.last_rocket) > 28;
+                if self.avoid_flight_collision(
+                    bot,
+                    physics,
+                    tick,
+                    username,
+                    flight_safety::FlightIntent::new(boost, flight_direction),
+                ) {
+                    return Ok(());
+                }
+                if boost {
                     self.rocket(bot, tick, username)?;
                 }
                 let d = direction(bot);
                 let heading = f64::from(yaw).to_radians();
                 let alignment = (-heading.sin() * d.x + heading.cos() * d.z)
                     / d.horizontal_distance_squared().sqrt().max(0.01);
-                if age >= 8 && alignment > 0.94 {
+                let speed = physics.velocity.horizontal_distance_squared().sqrt();
+                let course_alignment = (-heading.sin() * physics.velocity.x
+                    + heading.cos() * physics.velocity.z)
+                    / speed.max(0.01);
+                if age >= 8 && alignment > 0.94 && (speed < 0.2 || course_alignment > 0.8) {
                     self.pass_heading = d;
                     self.pass_target = target.position;
                     self.phase(Phase::Charge, tick, username);

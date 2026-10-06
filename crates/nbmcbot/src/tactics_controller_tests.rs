@@ -72,10 +72,30 @@ pub(super) fn client() -> Client {
             entity,
             Arc::new(parking_lot::RwLock::new(azalea::world::Instance::default())),
         ));
-    Client {
+    let bot = Client {
         entity,
         ecs: Arc::new(parking_lot::Mutex::new(std::mem::take(app.world_mut()))),
+    };
+    let holder = bot
+        .get_component::<azalea::local_player::InstanceHolder>()
+        .unwrap();
+    {
+        let mut world = holder.instance.write();
+        let mut partial = holder.partial_instance.write();
+        partial
+            .chunks
+            .update_view_center(azalea::core::position::ChunkPos::new(6, 6));
+        for x in 4..=8 {
+            for z in 4..=8 {
+                partial.chunks.set(
+                    &azalea::core::position::ChunkPos::new(x, z),
+                    Some(azalea::world::Chunk::default()),
+                    &mut world.chunks,
+                );
+            }
+        }
     }
+    bot
 }
 
 fn target(bot: &Client, x: f64, z: f64) -> Target {
@@ -842,6 +862,353 @@ fn spear_does_not_exit_a_charge_while_vertically_separated() {
             Phase::Exit,
             "a missed charge must still time out"
         );
+    }
+}
+
+fn flight_scene(position: Vec3, velocity: Vec3) -> Client {
+    let bot = client();
+    let dimensions = EntityDimensions::new(0.6, 0.6).eye_height(0.4);
+    let mut physics = Physics::default();
+    physics.velocity = velocity;
+    physics.bounding_box = dimensions.make_bounding_box(position);
+    bot.ecs
+        .lock()
+        .entity_mut(bot.entity)
+        .insert((Position::new(position), dimensions, physics));
+    bot
+}
+
+fn stone_box(bot: &Client, min: [i32; 3], max: [i32; 3]) {
+    let holder = bot
+        .get_component::<azalea::local_player::InstanceHolder>()
+        .unwrap();
+    let world = holder.instance.write();
+    for x in min[0]..=max[0] {
+        for y in min[1]..=max[1] {
+            for z in min[2]..=max[2] {
+                world
+                    .chunks
+                    .set_block_state(
+                        azalea::BlockPos::new(x, y, z),
+                        azalea::registry::builtin::BlockKind::Stone.into(),
+                    )
+                    .unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn spear_cancels_a_charge_before_boosting_into_a_real_wall() {
+    let bot = flight_scene(Vec3::new(100.0, 70.0, 100.0), Vec3::new(1.6, -0.1, 0.0));
+    stone_box(&bot, [109, 62, 96], [109, 77, 104]);
+    let enemy = target(&bot, 125.0, 100.0);
+    let mut duel = Duel::new("spear".into(), "Enemy".into());
+    duel.phase = Phase::Charge;
+    duel.since = 100;
+    duel.last_rocket = 60;
+    duel.charging = true;
+    assert!(crate::aerial::use_item(&bot, InteractionHand::MainHand));
+    let physics = bot.get_component::<Physics>().unwrap();
+    duel.spear(&bot, 112, "Test", &enemy, Vec3::ZERO, &physics)
+        .unwrap();
+    packet_tick(&bot);
+    assert!(bot.get_component::<LookDirection>().unwrap().x_rot() < 0.0);
+    assert!(!duel.charging, "terrain avoidance must release the spear");
+    assert_eq!(
+        use_count(&bot),
+        0,
+        "a collision course must not get another rocket"
+    );
+}
+
+#[test]
+fn spear_avoids_ground_while_pursuing_a_target_in_a_pit() {
+    let bot = flight_scene(Vec3::new(100.0, 69.0, 100.0), Vec3::new(1.6, -0.5, 0.0));
+    stone_box(&bot, [96, 62, 95], [123, 63, 105]);
+    let mut enemy = target(&bot, 119.0, 100.0);
+    enemy.position.y = 61.0;
+    enemy.aim.y = 61.4;
+    let mut duel = Duel::new("spear".into(), "Enemy".into());
+    duel.phase = Phase::Charge;
+    duel.since = 100;
+    duel.last_rocket = 60;
+    duel.charging = true;
+    let physics = bot.get_component::<Physics>().unwrap();
+    duel.spear(&bot, 112, "Test", &enemy, Vec3::ZERO, &physics)
+        .unwrap();
+    packet_tick(&bot);
+    assert!(
+        bot.get_component::<LookDirection>().unwrap().x_rot() < 0.0,
+        "an inaccessible low target must not direct a dive into the floor"
+    );
+    assert!(!duel.charging);
+    assert_eq!(use_count(&bot), 0);
+}
+
+#[test]
+fn spear_safe_ground_pass_stays_armed_then_pulls_out_without_hitting_the_floor() {
+    let bot = flight_scene(Vec3::new(100.0, 68.0, 100.0), Vec3::new(1.5, -0.4, 0.0));
+    stone_box(&bot, [94, 62, 94], [135, 63, 108]);
+    let mut enemy = target(&bot, 108.0, 100.0);
+    enemy.position.y = 64.0;
+    enemy.aim.y = 64.4;
+    let mut duel = Duel::new("spear".into(), "Enemy".into());
+    duel.phase = Phase::Charge;
+    duel.since = 90;
+    duel.last_rocket = 1;
+    duel.last_use = 80;
+    duel.charging = true;
+    let mut close_pass = false;
+    let mut pulled_out = false;
+    for tick in 100..112 {
+        let physics = bot.get_component::<Physics>().unwrap();
+        duel.spear(&bot, tick, "Test", &enemy, Vec3::ZERO, &physics)
+            .unwrap();
+        if tick == 100 {
+            assert!(
+                duel.charging,
+                "a safe pullout after contact must not cancel the armed approach"
+            );
+        }
+        close_pass |= bot.position().distance_squared_to(enemy.position) < 9.0 && duel.charging;
+        pulled_out |= duel.phase == Phase::Exit;
+        advance_flight_without_collision(&bot, false);
+        packet_tick(&bot);
+    }
+    assert!(
+        close_pass,
+        "the controller must allow a real armed close pass"
+    );
+    assert!(
+        pulled_out,
+        "the collision-free attack must enter its normal exit"
+    );
+}
+
+#[test]
+fn spear_cannot_assume_a_cooling_down_rocket_will_save_a_low_climb() {
+    let bot = flight_scene(Vec3::new(100.0, 65.0, 100.0), Vec3::new(0.4, -0.35, 0.0));
+    stone_box(&bot, [96, 62, 95], [123, 63, 105]);
+    let enemy = target(&bot, 120.0, 100.0);
+    let mut duel = Duel::new("spear".into(), "Enemy".into());
+    duel.phase = Phase::Climb;
+    duel.since = 100;
+    duel.last_rocket = 100;
+    duel.charging = true;
+    let physics = bot.get_component::<Physics>().unwrap();
+    duel.spear(&bot, 118, "Test", &enemy, Vec3::ZERO, &physics)
+        .unwrap();
+    packet_tick(&bot);
+    assert!(
+        !duel.charging,
+        "without an available rocket the predicted floor collision must interrupt climbing"
+    );
+    assert!(bot.get_component::<LookDirection>().unwrap().x_rot() < -22.0);
+    assert_eq!(use_count(&bot), 0);
+}
+
+#[test]
+fn lost_target_pursuit_does_not_boost_through_a_wall() {
+    let bot = flight_scene(Vec3::new(100.0, 70.0, 100.0), Vec3::new(0.7, -0.1, 0.0));
+    stone_box(&bot, [108, 63, 96], [108, 78, 104]);
+    let mut duel = Duel::new("spear".into(), "Enemy".into());
+    duel.last_rocket = 60;
+    duel.pursue(&bot, 112, "Test", Vec3::new(135.0, 70.0, 100.0))
+        .unwrap();
+    packet_tick(&bot);
+    assert_eq!(hand_use_count(&bot, InteractionHand::OffHand), 0);
+    assert!(bot.get_component::<LookDirection>().unwrap().x_rot() < -5.0);
+}
+
+#[test]
+fn grounded_spear_cannot_keep_charging_on_stale_gliding_metadata() {
+    let bot = client();
+    let enemy = target(&bot, 125.0, 100.0);
+    let mut duel = Duel::new("spear".into(), "Enemy".into());
+    duel.phase = Phase::Charge;
+    duel.since = 100;
+    duel.last_rocket = 60;
+    duel.charging = true;
+    let mut physics = Physics::default();
+    physics.set_on_ground(true);
+    duel.spear(&bot, 112, "Test", &enemy, Vec3::ZERO, &physics)
+        .unwrap();
+    packet_tick(&bot);
+    assert_eq!(duel.phase, Phase::Takeoff);
+    assert!(!duel.charging);
+    assert_eq!(use_count(&bot), 0);
+}
+
+#[test]
+fn spear_does_not_accelerate_into_unknown_chunks() {
+    let bot = flight_scene(Vec3::new(139.0, 70.0, 100.0), Vec3::new(1.4, 0.0, 0.0));
+    let enemy = target(&bot, 160.0, 100.0);
+    let mut duel = Duel::new("spear".into(), "Enemy".into());
+    duel.phase = Phase::Charge;
+    duel.since = 100;
+    duel.last_rocket = 60;
+    let physics = bot.get_component::<Physics>().unwrap();
+    duel.spear(&bot, 112, "Test", &enemy, Vec3::ZERO, &physics)
+        .unwrap();
+    packet_tick(&bot);
+    assert_eq!(
+        use_count(&bot),
+        0,
+        "unknown terrain is not a clear flight corridor"
+    );
+    assert!(!duel.charging);
+}
+
+#[test]
+fn takeoff_checks_the_actual_large_yaw_change_before_firing_a_rocket() {
+    let bot = flight_scene(Vec3::new(100.5, 70.0, 100.5), Vec3::ZERO);
+    stone_box(&bot, [96, 70, 100], [98, 76, 101]);
+    let enemy = target(&bot, 80.0, 100.5);
+    let mut duel = Duel::new("spear".into(), "Enemy".into());
+    duel.phase = Phase::Takeoff;
+    duel.since = 100;
+    let physics = bot.get_component::<Physics>().unwrap();
+    duel.spear(&bot, 112, "Test", &enemy, Vec3::ZERO, &physics)
+        .unwrap();
+    packet_tick(&bot);
+    assert_eq!(
+        hand_use_count(&bot, InteractionHand::OffHand),
+        0,
+        "a real 180-degree takeoff turn must not be forecast as a sideways first step"
+    );
+}
+
+#[test]
+fn unknown_top_layer_must_account_for_shapes_above_the_build_limit() {
+    for (height_offset, expected_rockets) in [(0.2, 0), (2.0, 1)] {
+        let bot = flight_scene(Vec3::new(142.7, 70.0, 100.0), Vec3::new(1.4, 0.0, 0.0));
+        let holder = bot
+            .get_component::<azalea::local_player::InstanceHolder>()
+            .unwrap();
+        let top = {
+            let world = holder.instance.read();
+            f64::from(world.chunks.min_y) + f64::from(world.chunks.height)
+        };
+        let position = Vec3::new(142.7, top + height_offset, 100.0);
+        {
+            let mut ecs = bot.ecs.lock();
+            *ecs.get_mut::<Position>(bot.entity).unwrap() = Position::new(position);
+            ecs.get_mut::<Physics>(bot.entity).unwrap().bounding_box =
+                EntityDimensions::new(0.6, 0.6).make_bounding_box(position);
+        }
+        let mut enemy = target(&bot, 165.0, 100.0);
+        enemy.position.y = position.y;
+        enemy.aim.y = position.y + 0.4;
+        let mut duel = Duel::new("spear".into(), "Enemy".into());
+        duel.phase = Phase::Charge;
+        duel.since = 100;
+        let physics = bot.get_component::<Physics>().unwrap();
+        duel.spear(&bot, 112, "Test", &enemy, Vec3::ZERO, &physics)
+            .unwrap();
+        packet_tick(&bot);
+        assert_eq!(
+            hand_use_count(&bot, InteractionHand::OffHand),
+            expected_rockets,
+            "unknown fences can extend above the top block, but higher air remains safe"
+        );
+    }
+}
+
+fn advance_flight_without_collision(bot: &Client, rocket_attached: bool) {
+    let mut physics = bot.get_component::<Physics>().unwrap();
+    let look = bot.get_component::<LookDirection>().unwrap();
+    physics.velocity = azalea::physics::travel::fall_flying_velocity(physics.velocity, look, 0.08);
+    let swept = physics.bounding_box.expand_towards(physics.velocity);
+    let holder = bot
+        .get_component::<azalea::local_player::InstanceHolder>()
+        .unwrap();
+    assert!(
+        azalea::physics::collision::world_collisions::get_block_collisions(
+            &holder.instance.read(),
+            &swept
+        )
+        .is_empty(),
+        "the actual inertial movement must not hit a block at {:?}, velocity {:?}",
+        bot.position(),
+        physics.velocity
+    );
+    let position = bot.position() + physics.velocity;
+    physics.bounding_box = physics.bounding_box.move_relative(physics.velocity);
+    if rocket_attached {
+        let vector = azalea::entity::view_vector(look);
+        physics.velocity += vector * 0.1 + (vector * 1.5 - physics.velocity) * 0.5;
+    }
+    bot.ecs
+        .lock()
+        .entity_mut(bot.entity)
+        .insert((Position::new(position), physics));
+}
+
+#[test]
+fn spear_exit_steers_actual_momentum_clear_of_a_wall() {
+    let bot = flight_scene(Vec3::new(100.0, 69.0, 100.0), Vec3::new(1.7, -0.35, 0.0));
+    stone_box(&bot, [109, 62, 97], [109, 78, 106]);
+    let enemy = target(&bot, 125.0, 100.0);
+    let mut duel = Duel::new("spear".into(), "Enemy".into());
+    duel.phase = Phase::Exit;
+    duel.since = 100;
+    duel.last_rocket = 1;
+    duel.pass_heading = Vec3::new(1.0, 0.0, 0.0);
+    for tick in 100..120 {
+        let physics = bot.get_component::<Physics>().unwrap();
+        duel.spear(&bot, tick, "Test", &enemy, Vec3::ZERO, &physics)
+            .unwrap();
+        advance_flight_without_collision(&bot, tick.saturating_sub(duel.last_rocket) < 20);
+        packet_tick(&bot);
+    }
+}
+
+#[test]
+fn spear_turn_waits_for_actual_velocity_to_finish_turning() {
+    let bot = flight_scene(Vec3::new(100.0, 90.0, 100.0), Vec3::new(-1.5, 0.0, 0.0));
+    let enemy = target(&bot, 115.0, 100.0);
+    let mut duel = Duel::new("spear".into(), "Enemy".into());
+    duel.phase = Phase::Turn;
+    duel.since = 100;
+    duel.last_rocket = 111;
+    duel.turn_yaw = Some(-90.0);
+    let mut physics = bot.get_component::<Physics>().unwrap();
+    duel.spear(&bot, 112, "Test", &enemy, Vec3::ZERO, &physics)
+        .unwrap();
+    assert_eq!(
+        duel.phase,
+        Phase::Turn,
+        "looking at the opponent does not mean backward momentum has turned"
+    );
+    physics.velocity = Vec3::new(1.0, 0.0, 0.0);
+    duel.spear(&bot, 113, "Test", &enemy, Vec3::ZERO, &physics)
+        .unwrap();
+    assert_eq!(duel.phase, Phase::Charge);
+}
+
+#[test]
+fn lost_or_dead_target_keeps_floor_collision_protection() {
+    for dead in [false, true] {
+        let bot = flight_scene(Vec3::new(100.0, 67.0, 100.0), Vec3::new(1.6, -0.7, 0.0));
+        stone_box(&bot, [96, 62, 95], [128, 63, 105]);
+        let selected = enemy(&bot, "Enemy1", 115.0);
+        let mut duel = Duel::new("spear".into(), "Enemy".into());
+        duel.tick(&bot, 100, "Test").unwrap();
+        if dead {
+            bot.ecs.lock().entity_mut(selected).insert(Health(0.0));
+        } else {
+            bot.ecs
+                .lock()
+                .entity_mut(selected)
+                .remove::<azalea::entity::LoadedBy>();
+        }
+        for tick in 101..108 {
+            duel.tick(&bot, tick, "Test").unwrap();
+            assert!(!duel.charging);
+            advance_flight_without_collision(&bot, tick.saturating_sub(duel.last_rocket) < 20);
+            packet_tick(&bot);
+        }
     }
 }
 

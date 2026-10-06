@@ -59,6 +59,7 @@ impl Duel {
                 return Ok(());
             }
             let heading = direction(bot);
+            let flight_direction = bot.get_component::<LookDirection>().unwrap_or_default();
             let bearing = f64::from(yaw).to_radians();
             let alignment = (-bearing.sin() * heading.x + bearing.cos() * heading.z)
                 / heading.horizontal_distance_squared().sqrt().max(0.01);
@@ -72,12 +73,21 @@ impl Duel {
                 -5.0
             };
             steer(bot, yaw, pitch, 25.0);
-            if rockets
+            let boost = rockets
                 && alignment > 0.85
                 && (distance > 24.0 || goal.y > p.y + 8.0)
                 && tick.saturating_sub(self.last_rocket) >= 40
-                && (physics.velocity.horizontal_distance_squared() < 1.0 || goal.y > p.y + 8.0)
-            {
+                && (physics.velocity.horizontal_distance_squared() < 1.0 || goal.y > p.y + 8.0);
+            if self.avoid_flight_collision(
+                bot,
+                &physics,
+                tick,
+                username,
+                flight_safety::FlightIntent::new(boost, flight_direction),
+            ) {
+                return Ok(());
+            }
+            if boost {
                 self.rocket(bot, tick, username)?;
             }
             return Ok(());
